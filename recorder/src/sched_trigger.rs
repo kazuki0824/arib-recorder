@@ -10,8 +10,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::context::Context;
 use crate::recording_planner::PlanId;
-use crate::RecordControlMessage;
-use crate::recording_pool::RecordingTaskDescription;
+use crate::{RecordControlMessage, RecordingTaskDescription};
 
 pub(crate) struct SchedQueue {
     pub(crate) items: Vec<Schedule>,
@@ -73,10 +72,7 @@ pub(crate) struct Schedule {
     pub(crate) is_active: bool,
 }
 
-pub(crate) async fn sched_trigger_startup(
-    cx: Arc<Context>,
-    tx: Sender<RecordControlMessage>,
-) {
+pub(crate) async fn sched_trigger_startup(cx: Arc<Context>, tx: Sender<RecordControlMessage>) {
     loop {
         info!("Now locking q_schedules.");
         {

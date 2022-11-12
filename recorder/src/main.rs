@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
+use crate::api::api_startup;
 use ::mirakurun_client::models::Program;
 use serde_derive::{Deserialize, Serialize};
 use tokio::select;
-use crate::api::api_startup;
 
 use crate::context::Context;
 use crate::epg_syncer::epg_sync_startup;
