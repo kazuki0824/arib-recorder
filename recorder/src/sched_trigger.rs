@@ -20,12 +20,11 @@ pub(crate) struct SchedQueue {
 
 impl SchedQueue {
     pub fn new(location: Option<PathBuf>) -> Result<Self, Error> {
-        let path = location
-            .unwrap_or(PathBuf::from("./q_schedules.json"))
-            .canonicalize()?;
+        let mut path = location.unwrap_or(PathBuf::from("./q_schedules.json"));
 
         //Import all the previously stored schedules
         let schedules = if path.exists() {
+            path = path.canonicalize()?;
             let str = std::fs::read(&path)?;
             match serde_json::from_slice::<Vec<Schedule>>(&str) {
                 Ok(items) => Some(items),
