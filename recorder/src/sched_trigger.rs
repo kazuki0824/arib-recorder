@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Local};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use mirakurun_client::models::Program;
 use serde_derive::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
@@ -29,6 +29,7 @@ impl SchedQueue {
             match serde_json::from_slice::<Vec<Schedule>>(&str) {
                 Ok(items) => Some(items),
                 Err(e) => {
+                    warn!("q_schedules parse error.");
                     warn!("{}", e);
                     None
                 }
@@ -45,10 +46,7 @@ impl SchedQueue {
             save_file_location: path,
         })
     }
-}
-
-impl Drop for SchedQueue {
-    fn drop(&mut self) {
+    fn save(&mut self) {
         //Export remaining tasks
         let path = self
             .save_file_location
@@ -64,6 +62,12 @@ impl Drop for SchedQueue {
     }
 }
 
+impl Drop for SchedQueue {
+    fn drop(&mut self) {
+        self.save()
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Schedule {
     pub(crate) program: Program,
@@ -72,7 +76,7 @@ pub(crate) struct Schedule {
     pub(crate) is_active: bool,
 }
 
-pub(crate) async fn sched_trigger_startup(cx: Arc<Context>, tx: Sender<RecordControlMessage>) {
+pub(crate) async fn sched_trigger_startup(cx: Arc<Context>, tx: Sender<RecordControlMessage>) -> Result<(), Error> {
     loop {
         info!("Now locking q_schedules.");
         {
@@ -107,11 +111,19 @@ pub(crate) async fn sched_trigger_startup(cx: Arc<Context>, tx: Sender<RecordCon
             });
             remainder = q_schedules.items.len();
 
-            info!(
-                "{} schedule units remains. {} of unit(s) dropped.",
-                remainder,
-                found - remainder
-            );
+            if remainder > 0 {
+                info!(
+                    "{} schedule units remains. {} of unit(s) dropped.",
+                    remainder,
+                    found - remainder
+                )
+            } else {
+                debug!(
+                    "{} schedule units remains. {} of unit(s) dropped.",
+                    remainder,
+                    found - remainder
+                )
+            }
 
             for item in q_schedules.items.iter() {
                 match item {
@@ -136,7 +148,7 @@ pub(crate) async fn sched_trigger_startup(cx: Arc<Context>, tx: Sender<RecordCon
                                 error!("Failed to create dir at {}.\n{}", &candidate, e);
                                 continue;
                             }
-                            std::fs::canonicalize(candidate).unwrap()
+                            std::fs::canonicalize(candidate)?
                         };
 
                         let task = RecordingTaskDescription {

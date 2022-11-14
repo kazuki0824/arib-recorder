@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use meilisearch_sdk::indexes::Index;
 use meilisearch_sdk::Client;
 use mirakurun_client::apis::configuration::Configuration;
@@ -76,25 +76,38 @@ impl EpgSyncManager {
 
     pub(crate) async fn run(self) -> Result<(), meilisearch_sdk::errors::Error> {
         let periodic = async {
-            let sec = 600;
-            info!("Periodic EPG update is running every {} seconds.", sec);
-            loop {
-                self.refresh_db().await?;
-                info!("refresh_db() succeeded.");
+            const PERIODIC_EPG_UPDATE_SEC: u64 = 600;
 
-                tokio::time::sleep(Duration::from_secs(sec)).await;
+            info!("Reclaiming EPG DB...");
+            self.refresh_db(true).await?;
+
+            info!("Periodic EPG update is running every {} seconds.", PERIODIC_EPG_UPDATE_SEC);
+            loop {
+                tokio::time::sleep(Duration::from_secs(PERIODIC_EPG_UPDATE_SEC)).await;
+
+                self.refresh_db(false).await?;
+                info!("refresh_db() succeeded.");
             }
         };
 
         let event = async {
+            const RECONNECTION_MAX: i64 = 10;
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let mut reconnection_counter = -1;
             loop {
+                reconnection_counter += 1;
+                if reconnection_counter >= RECONNECTION_MAX {
+                    //TODO: Avoid excessive load
+                    warn!("Reconnection limit reached.")
+                }
                 // Subscribe NDJSON here.
                 // Store programs data into DB, and keep track of them using Mirakurun's Events API.
                 let mut stream = match self.update_db_from_stream().await {
                     Ok(value) => value,
                     Err(e) => {
                         error!("{:#?}", e);
-                        error!("Reconnecting to Events API.");
+                        error!("Reconnecting to Events API again.");
                         continue;
                     }
                 };
@@ -128,11 +141,11 @@ impl EpgSyncManager {
                                 .await
                             {
                                 Ok(_) => {
-                                    info!("Updates have been successfully applied.");
                                     // Update schedules
                                     if let Ok(mut q_schedules) = self.cx.q_schedules.write() {
                                         q_schedules.items.iter_mut().for_each(|mut f| {
                                             if value.id == f.program.id {
+                                                info!("Program Id={} has been overwritten.", value.id);
                                                 f.program = value.clone();
                                             }
                                         });
@@ -151,7 +164,7 @@ impl EpgSyncManager {
                         }
                     }
                 }
-                info!("Reconnecting to /events")
+                warn!("Trying to recover /events subscription.")
             }
         };
 
