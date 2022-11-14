@@ -79,9 +79,13 @@ impl EpgSyncManager {
             const PERIODIC_EPG_UPDATE_SEC: u64 = 600;
 
             info!("Reclaiming EPG DB...");
-            self.refresh_db(true).await?;
+            let res_refresh = self.refresh_db(true).await?;
+            info!("Reclaiming has finished. {{}} of services / {{}} of programs are found.");
 
-            info!("Periodic EPG update is running every {} seconds.", PERIODIC_EPG_UPDATE_SEC);
+            info!(
+                "Periodic EPG update is running every {} seconds.",
+                PERIODIC_EPG_UPDATE_SEC
+            );
             loop {
                 tokio::time::sleep(Duration::from_secs(PERIODIC_EPG_UPDATE_SEC)).await;
 
@@ -145,7 +149,10 @@ impl EpgSyncManager {
                                     if let Ok(mut q_schedules) = self.cx.q_schedules.write() {
                                         q_schedules.items.iter_mut().for_each(|mut f| {
                                             if value.id == f.program.id {
-                                                info!("Program Id={} has been overwritten.", value.id);
+                                                info!(
+                                                    "Program Id={} has been overwritten.",
+                                                    value.id
+                                                );
                                                 f.program = value.clone();
                                             }
                                         });

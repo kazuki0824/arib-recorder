@@ -81,7 +81,7 @@ pub(crate) async fn sched_trigger_startup(
     tx: Sender<RecordControlMessage>,
 ) -> Result<(), Error> {
     loop {
-        info!("Now locking q_schedules.");
+        debug!("Now locking q_schedules.");
         {
             let mut q_schedules = cx.q_schedules.write().unwrap();
 
@@ -198,7 +198,7 @@ pub(crate) async fn sched_trigger_startup(
                 }
             }
         }
-        info!("Scanning schedules completed. Now releasing q_schedules.");
+        debug!("Scanning schedules completed. Now releasing q_schedules.");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }

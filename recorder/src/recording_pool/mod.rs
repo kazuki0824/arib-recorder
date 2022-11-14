@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use log::info;
+use log::{debug, info};
 use once_cell::sync::Lazy;
 use tokio::sync::mpsc::Receiver;
 
@@ -22,7 +22,7 @@ pub(crate) async fn recording_pool_startup(
         let received = rx.recv().await;
 
         if let Some(received) = received.as_ref() {
-            info!("Incoming RecordControlMessage:\n {:?}", received);
+            debug!("Incoming RecordControlMessage:\n {:?}", received);
         }
 
         match received {
@@ -40,7 +40,10 @@ pub(crate) async fn recording_pool_startup(
                 if REC_POOL.write().unwrap().try_add(cx.clone(), info) {
                     info!("A new program (id={}) has been added to recording queue because of an incoming message.", id)
                 } else {
-                    info!("{}(id={}) is already being recorded, thus it's skipped.", view_title_name, id)
+                    info!(
+                        "{}(id={}) is already being recorded, thus it's skipped.",
+                        view_title_name, id
+                    )
                 }
             }
             None => continue,
