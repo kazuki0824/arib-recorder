@@ -16,6 +16,22 @@ pub(crate) fn get_temporary_accessor<C: AsRef<Context>>(cx: C) -> Client {
     )
 }
 
+pub async fn replace_programs_ranges(index: &Index, data: &[Program]) -> Result<Task, Error> {
+    index
+        .add_or_replace(data, Some("id"))
+        .await?
+        .wait_for_completion(&index.client, None, Some(Duration::from_secs(10)))
+        .await
+}
+
+pub async fn replace_services_ranges(index: &Index, data: &[Service]) -> Result<Task, Error> {
+    index
+        .add_or_replace(data, Some("id"))
+        .await?
+        .wait_for_completion(&index.client, None, Some(Duration::from_secs(10)))
+        .await
+}
+
 pub async fn push_programs_ranges(index: &Index, data: &[Program]) -> Result<Task, Error> {
     index
         .add_or_update(data, Some("id"))
