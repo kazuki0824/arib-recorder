@@ -7,9 +7,10 @@ use log::{debug, error, info, warn};
 use mirakurun_client::models::Program;
 use serde_derive::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
+use ulid::Ulid;
 
 use crate::context::Context;
-use crate::recording_planner::PlanId;
+use crate::recording_planner::PlanUnit;
 use crate::{RecordControlMessage, RecordingTaskDescription};
 
 pub(crate) struct SchedQueue {
@@ -72,44 +73,50 @@ impl Drop for SchedQueue {
 pub(crate) struct Schedule {
     pub(crate) program: Program,
     // If it is added through a plan (e.g. Record all of the items in the series), its uuid is stored here.
-    pub(crate) plan_id: PlanId,
+    pub(crate) plan_id: Option<(Ulid, PlanUnit)>,
     pub(crate) is_active: bool,
 }
 
-pub(crate) async fn sched_trigger_startup(cx: Arc<Context>, tx: Sender<RecordControlMessage>) -> Result<(), Error> {
+pub(crate) async fn sched_trigger_startup(
+    cx: Arc<Context>,
+    tx: Sender<RecordControlMessage>,
+) -> Result<(), Error> {
     loop {
         info!("Now locking q_schedules.");
         {
             let mut q_schedules = cx.q_schedules.write().unwrap();
 
-            let (found, mut remainder) = (q_schedules.items.len(), 0usize);
+            let (found, remainder) = {
+                let found = q_schedules.items.len();
 
-            // Drop expired item
-            q_schedules.items.retain(|item| {
-                let start_at = item.program.start_at;
+                // Drop expired item
+                q_schedules.items.retain(|item| {
+                    let start_at = item.program.start_at;
 
-                match item {
-                    Schedule {
-                        program:
-                            Program {
-                                duration: Some(length_msec),
-                                ..
-                            },
-                        ..
-                    } => {
-                        //長さ有限かつ現在放送終了してたらドロップ
-                        Local::now() < start_at + Duration::milliseconds(*length_msec as i64)
+                    match item {
+                        Schedule {
+                            program:
+                                Program {
+                                    duration: Some(length_msec),
+                                    ..
+                                },
+                            ..
+                        } => {
+                            //長さ有限かつ現在放送終了してたらドロップ
+                            Local::now() < start_at + Duration::milliseconds(*length_msec as i64)
+                        }
+                        Schedule {
+                            program: Program { duration: None, .. },
+                            ..
+                        } => {
+                            //長さ未定のときは、開始時刻から１時間経過したらドロップ
+                            Local::now() < start_at + Duration::hours(1)
+                        }
                     }
-                    Schedule {
-                        program: Program { duration: None, .. },
-                        ..
-                    } => {
-                        //長さ未定のときは、開始時刻から１時間経過したらドロップ
-                        Local::now() < start_at + Duration::hours(1)
-                    }
-                }
-            });
-            remainder = q_schedules.items.len();
+                });
+
+                (found, q_schedules.items.len())
+            };
 
             if remainder > 0 {
                 info!(
@@ -140,9 +147,9 @@ pub(crate) async fn sched_trigger_startup(cx: Arc<Context>, tx: Sender<RecordCon
                         //保存場所の決定
                         let save_location = {
                             let candidate = match item.plan_id {
-                                PlanId::Word(id) => format!("./word_{}/", id),
-                                PlanId::Series(id) => format!("./series_{}/", id),
-                                PlanId::None => "./common/".to_string(),
+                                Some((id, PlanUnit::Word(_))) => format!("./word_{}/", id),
+                                Some((id, PlanUnit::Series(_))) => format!("./series_{}/", id),
+                                None => "./common/".to_string(),
                             };
                             if let Err(e) = std::fs::create_dir_all(&candidate) {
                                 error!("Failed to create dir at {}.\n{}", &candidate, e);

@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use structopt::StructOpt;
 
+use crate::recording_planner::RulesResolverBase;
 use crate::sched_trigger::SchedQueue;
 
 #[derive(Debug, StructOpt)]
@@ -15,13 +16,16 @@ struct Opt {
     #[structopt(short)]
     meilisearch_api_key: Option<String>,
     #[structopt(short)]
-    schedule_path: Option<PathBuf>,
+    schedules_path: Option<PathBuf>,
+    #[structopt(short)]
+    rules_path: Option<PathBuf>,
 }
 
 pub(crate) struct Context {
     pub(crate) mirakurun_base_uri: String,
     pub(crate) meilisearch_base_uri: String,
     pub(crate) meilisearch_api_key: String,
+    pub(crate) q_rules: RwLock<RulesResolverBase>,
     pub(crate) q_schedules: RwLock<SchedQueue>,
 }
 
@@ -35,7 +39,8 @@ impl Context {
             mirakurun_base_uri: opt.mirakurun_base_uri,
             meilisearch_base_uri: opt.meilisearch_base_uri,
             meilisearch_api_key,
-            q_schedules: RwLock::new(SchedQueue::new(opt.schedule_path).unwrap()),
+            q_rules: RwLock::new(RulesResolverBase::new(opt.rules_path).unwrap()),
+            q_schedules: RwLock::new(SchedQueue::new(opt.schedules_path).unwrap()),
         })
     }
 }

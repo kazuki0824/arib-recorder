@@ -9,10 +9,11 @@ use axum::{
     Router,
 };
 use log::info;
+use ulid::Ulid;
 
 use crate::context::Context;
-use crate::db_utils::{get_all_programs, get_temporary_accessor, pull_program};
-use crate::recording_planner::PlanId;
+use crate::db_utils::{get_all_programs, get_all_services, get_temporary_accessor, pull_program};
+use crate::recording_planner::PlanUnit;
 use crate::sched_trigger::Schedule;
 
 pub(crate) async fn api_startup(cx: Arc<Context>) {
@@ -91,7 +92,7 @@ async fn put_recording_schedule(
     };
     let s = Schedule {
         program,
-        plan_id: PlanId::None,
+        plan_id: None,
         is_active: true,
     };
 
