@@ -4,3 +4,4 @@ Cargo.lock
 /.idea
 q_rules.json
 q_schedules.json
+.dockerignore
