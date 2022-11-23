@@ -11,6 +11,7 @@ services:
       - MEILI_ENV=${MEILI_ENV:-development}
       - MEILI_LOG_LEVEL
       - MEILI_DB_PATH=${MEILI_DB_PATH:-/data.ms}
+    hostname: meiliepg
     ports:
       - ${MEILI_PORT:-7700}:7700
     networks:
@@ -19,9 +20,17 @@ services:
       - ./data.ms:/data.ms
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--spider",  "http://meilisearch:7700/health"]
+      test: ["CMD", "wget", "--no-verbose", "--spider",  "http://meiliepg:7700/health"]
       retries: 3
       timeout: 5s
+  recorder:
+    container_name: recorder
+    build:
+      context: ./recorder
+      dockerfile: Dockerfile
+    depends_on:
+      meilisearch:
+        condition: service_healthy
     
 networks:
   meilisearch:
