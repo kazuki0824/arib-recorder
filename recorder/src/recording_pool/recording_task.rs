@@ -142,7 +142,7 @@ pin_project! {
     pub(crate) struct RecordingTask {
         #[pin]
         target: Option<IoObject>,
-        eit: EitParser,
+        pub(crate) eit: EitParser,
         next_state: RecordingState,
         pub(crate) state: RecordingState,
         pub(crate) id: i64,
@@ -167,7 +167,7 @@ impl RecordingTask {
         let target = Some(IoObject::new(None).await?);
         Ok(Self {
             target,
-            eit: EitParser::new(),
+            eit: EitParser::new()?,
             next_state: RecordingState::A(A {
                 since: Local::now(),
             }),
@@ -177,6 +177,10 @@ impl RecordingTask {
             id: info.program.id,
             file_location,
         })
+    }
+
+    pub async fn proc_output(&mut self, program: i64) -> Result<(), Error> {
+        self.eit.proc_output(program)
     }
 }
 
@@ -191,28 +195,31 @@ impl AsyncWrite for RecordingTask {
         // Get RecordingDescription. If not exist, return error.
         if let Some(item) = REC_POOL.read().unwrap().at(me.id) {
             // Evaluate states and control IoObject
-            let after = match me.eit.push(buf, item) {
-                EitDetected::P(inner) => me.state.on_found_in_present(inner),
-                EitDetected::F(inner) => me.state.on_found_in_following(inner),
-                EitDetected::NotFound { since } => {
-                    if Local::now() - since > Duration::seconds(30) {
-                        //停波中
-                        todo!()
-                    } else {
-                        me.state.on_wait_for_premiere(WaitForPremiere {
-                            start_at: REC_POOL
-                                .read()
-                                .unwrap()
-                                .at(me.id)
-                                .unwrap()
-                                .program
-                                .start_at
-                                .into(),
-                        })
+            if me.eit.rx.has_changed().unwrap() {
+                let after = match *me.eit.rx.borrow_and_update() {
+                    EitDetected::P(ref inner) => me.state.on_found_in_present(inner.clone()),
+                    EitDetected::F(ref inner) => me.state.on_found_in_following(inner.clone()),
+                    EitDetected::NotFound { since } => {
+                        if Local::now() - since > Duration::seconds(30) {
+                            //停波中
+                            panic!("No EIT received for 30 secs. Check the child process and signal")
+                        } else {
+                            me.state.on_wait_for_premiere(WaitForPremiere {
+                                start_at: REC_POOL
+                                    .read()
+                                    .unwrap()
+                                    .at(me.id)
+                                    .unwrap()
+                                    .program
+                                    .start_at
+                                    .into(),
+                            })
+                        }
                     }
-                }
-            };
-            *me.next_state = after;
+                };
+
+                *me.next_state = after;
+            }
 
             if me.state != me.next_state {
                 info!(
@@ -258,9 +265,11 @@ impl AsyncWrite for RecordingTask {
 
                 Poll::Pending
             } else {
+                let _ = Pin::new(&mut me.eit).poll_write(cx, buf);
                 me.target.as_pin_mut().unwrap().poll_write(cx, buf)
             }
         } else {
+            // RecordDescription not found
             me.target
                 .as_pin_mut()
                 .unwrap()
@@ -276,7 +285,6 @@ impl AsyncWrite for RecordingTask {
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         let me = self.project();
-        REC_POOL.write().unwrap().try_remove(me.id);
         info!("id: {} is shutting down...", me.id);
         me.target.as_pin_mut().unwrap().poll_shutdown(cx)
     }

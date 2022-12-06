@@ -88,7 +88,10 @@ async fn spawn_new(cx: Arc<Context>, id: i64, rx: Receiver<()>) {
         // If value is removed, abort the transmission.
         //_ = || async{ while let Some(_) = REC_POOL.lock().await.inner.get(&id) {} }=> {},
         _ = rx => {},
-        Err(e) = generate_task(&cx.mirakurun_base_uri, id) => error!("{:#?}", e)
+        Err(e) = generate_task(&cx.mirakurun_base_uri, id) => {
+            REC_POOL.write().unwrap().try_remove(&id);
+            error!("{:#?}", e)
+        }
     }
 }
 

@@ -14,7 +14,9 @@ use ulid::Ulid;
 use crate::context::Context;
 use crate::db_utils::{get_all_programs, get_all_services, get_temporary_accessor, pull_program};
 use crate::recording_planner::PlanUnit;
+use crate::recording_pool::REC_POOL;
 use crate::sched_trigger::Schedule;
+use crate::RecordingTaskDescription;
 
 pub(crate) async fn api_startup(cx: Arc<Context>) {
     let cx1 = cx.clone();
@@ -22,6 +24,8 @@ pub(crate) async fn api_startup(cx: Arc<Context>) {
     let cx3 = cx.clone();
     let cx4 = cx.clone();
     let cx5 = cx.clone();
+    let cx6 = cx.clone();
+    let cx7 = cx.clone();
 
     let app = Router::new()
         .route(
@@ -42,28 +46,56 @@ pub(crate) async fn api_startup(cx: Arc<Context>) {
             }),
         )
         .route(
-            "/q/sched",
-            get(move || async move {
-                serde_json::to_string(&cx3.q_schedules.read().unwrap().items).unwrap()
+            "/services",
+            get(|| async {
+                let client = get_temporary_accessor(cx3);
+                let res = get_all_services(&client).await;
+                match res {
+                    Ok(res) => Ok(response::Json(res)),
+                    Err(e) => Err(e.to_string().into_response()),
+                }
             }),
         )
-        // .route(
-        //     "/q/recording",
-        //     get(move || async move {
-        //         let obj = REC_POOL
-        //             .read()
-        //             .unwrap()
-        //             .iter()
-        //             .cloned()
-        //             .collect::<Vec<RecordingTaskDescription>>();
-        //         serde_json::to_string(&obj).unwrap()
-        //     }),
-        // )
+        .route(
+            "/q/sched",
+            get(move || async move {
+                match cx4.q_schedules.read() {
+                    Ok(res) => Ok(response::Json(res.items.clone())),
+                    Err(e) => Err(e.to_string().into_response()),
+                }
+            }),
+        )
+        .route("/q/sched", delete(|p| delete_sched(cx5, p)))
+        .route(
+            "/q/recording",
+            get(move || async move {
+                match REC_POOL.read() {
+                    Ok(res) => Ok(response::Json(
+                        res.iter()
+                            .cloned()
+                            .collect::<Vec<RecordingTaskDescription>>(),
+                    )),
+                    Err(e) => Err(e.to_string().into_response()),
+                }
+            }),
+        )
         .route(
             "/new/sched",
-            put(move |p| async move { put_recording_schedule(cx4, p).await }),
+            put(move |p| async move { put_recording_schedule(cx6, p).await }),
         )
-        .route("/q/sched", delete(|p| delete_sched(cx5, p)));
+        .route(
+            "/q/rules",
+            get(move || async move {
+                match cx7.q_rules.read() {
+                    Ok(res) => Ok(response::Json(
+                        res.iter()
+                            .map(|f| (f.0.clone(), f.1.clone()))
+                            .collect::<Vec<(Ulid, PlanUnit)>>(),
+                    )),
+                    Err(e) => Err(e.to_string().into_response()),
+                }
+            }),
+        );
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     info!("listening on {}", addr);

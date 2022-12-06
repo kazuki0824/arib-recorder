@@ -117,7 +117,7 @@ pub(crate) async fn sched_trigger_startup(
                 (found, q_schedules.items.len())
             };
 
-            if remainder > 0 {
+            if remainder > 0 || found - remainder > 0 {
                 info!(
                     "{} schedule units remains. {} of unit(s) dropped.",
                     remainder,
