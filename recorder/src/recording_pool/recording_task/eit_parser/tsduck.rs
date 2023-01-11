@@ -6,12 +6,11 @@ use std::pin::Pin;
 use std::process::{Command, Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncWrite};
 use tokio::sync::watch::Sender;
+use crate::recording_pool::recording_task::FoundInFollowing;
 
 pub(super) struct TsDuckInner {
     stdin: tokio::process::ChildStdin,
     child: std::process::Child,
-
-    tx: Sender<EitDetected>,
 }
 impl Drop for TsDuckInner {
     fn drop(&mut self) {
@@ -48,6 +47,7 @@ impl TsDuckInner {
                 match serde_json::from_str::<Value>(&line) {
                     Ok(data) => {
                         println!("Data: {:?}", data);
+                        tx.send(EitDetected::F(FoundInFollowing { start_at: Default::default(), duration: None })).unwrap();
                     }
                     Err(e) => {
                         eprintln!("Error while parsing JSON: {:?}", e);
@@ -57,7 +57,7 @@ impl TsDuckInner {
             Ok::<_, io::Error>(())
         });
 
-        Ok(Self { stdin, child, tx })
+        Ok(Self { stdin, child })
     }
 }
 
