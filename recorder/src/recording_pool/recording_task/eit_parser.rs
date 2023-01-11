@@ -2,6 +2,7 @@ mod tsduck;
 
 use crate::recording_pool::recording_task::eit_parser::tsduck::TsDuckInner;
 use crate::recording_pool::recording_task::{FoundInFollowing, FoundInPresent};
+use crate::RecordingTaskDescription;
 use chrono::{DateTime, Local};
 use log::error;
 use std::io::Error;
@@ -9,7 +10,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
 use tokio::sync::watch::{Receiver, Sender};
-use crate::RecordingTaskDescription;
 
 enum EitParserInner {
     SelfImpl,
@@ -43,22 +43,6 @@ impl EitParser {
 
         Ok(EitParser { parser, rx })
     }
-    pub async fn proc_output(& self, program: i64) -> Result<(), Error> {
-        match self.parser {
-            EitParserInner::SelfImpl => todo!(),
-            EitParserInner::TsDuck(ref mut inner) => {
-                inner.proc_output(program).await
-            }
-        }
-    }
-}
-
-pub trait ParserInnerBase
-where
-    Self: AsyncWrite + Sized,
-{
-    fn new(tx: Sender<EitDetected>) -> Result<Self, Error>;
-    // async fn proc_output(&mut self, program: &RecordingTaskDescription) -> Result<(), Error>;
 }
 
 impl AsyncWrite for EitParser {
@@ -69,9 +53,7 @@ impl AsyncWrite for EitParser {
     ) -> Poll<Result<usize, Error>> {
         match self.get_mut().parser {
             EitParserInner::SelfImpl => todo!(),
-            EitParserInner::TsDuck(ref mut inner) => {
-                Pin::new(inner).poll_write(cx, buf)
-            }
+            EitParserInner::TsDuck(ref mut inner) => Pin::new(inner).poll_write(cx, buf),
         }
     }
 

@@ -62,7 +62,11 @@ trait IntoRec {
     {
         Rec {
             since: Local::now(),
-            end: present.duration.map_or(Local::now() + Duration::minutes(5), |d| present.start_at + d),
+            end: present
+                .duration
+                .map_or(Local::now() + Duration::minutes(5), |d| {
+                    present.start_at + d
+                }),
         }
     }
 }
@@ -178,10 +182,6 @@ impl RecordingTask {
             file_location,
         })
     }
-
-    pub async fn proc_output(&mut self, program: i64) -> Result<(), Error> {
-        self.eit.proc_output(program)
-    }
 }
 
 impl AsyncWrite for RecordingTask {
@@ -202,7 +202,9 @@ impl AsyncWrite for RecordingTask {
                     EitDetected::NotFound { since } => {
                         if Local::now() - since > Duration::seconds(30) {
                             //停波中
-                            panic!("No EIT received for 30 secs. Check the child process and signal")
+                            panic!(
+                                "No EIT received for 30 secs. Check the child process and signal"
+                            )
                         } else {
                             me.state.on_wait_for_premiere(WaitForPremiere {
                                 start_at: REC_POOL
