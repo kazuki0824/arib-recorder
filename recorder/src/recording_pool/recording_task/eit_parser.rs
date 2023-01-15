@@ -21,6 +21,7 @@ pub(crate) struct EitParser {
     pub(super) rx: Receiver<EitDetected>,
 }
 
+#[derive(Debug)]
 pub enum EitDetected {
     P(FoundInPresent),
     F(FoundInFollowing),

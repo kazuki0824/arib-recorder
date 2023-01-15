@@ -23,24 +23,25 @@ impl TsDuckInner {
         let mut child = {
             Command::new(format!("tstables"))
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .args([
-                    "--flush",
                     "--japan",
                     "--log-json-line",
                     "--pid",
                     "0x12",
                     "--tid",
                     "0x4E",
-                ]) //, "--section-number", "0-1"])
+                    "--section-number",
+                    "0-1"
+                ])
                 .spawn()?
         };
 
         let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
         let stdin = tokio::process::ChildStdin::from_std(stdin)?;
-        let stdout = tokio::process::ChildStdout::from_std(stdout)?;
-        let mut reader = tokio::io::BufReader::new(stdout).lines();
+        let stderr = tokio::process::ChildStderr::from_std(stderr)?;
+        let mut reader = tokio::io::BufReader::new(stderr).lines();
 
         tokio::spawn(async move {
             while let Some(line) = reader.next_line().await? {
