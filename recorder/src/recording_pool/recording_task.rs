@@ -1,152 +1,38 @@
-use std::io::Error;
+mod eit_subprocess;
+mod io_object;
+mod states;
+
+use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
+use crate::recording_pool::recording_task::io_object::IoObject;
+use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A};
+use crate::recording_pool::REC_POOL;
+use chrono::{Duration, Local};
+use futures_util::TryStreamExt;
+use log::info;
+use mirakurun_client::apis::configuration::Configuration;
+use mirakurun_client::apis::programs_api::get_program_stream;
+use pin_project_lite::pin_project;
+use std::future::Future;
+use std::io;
+use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
+use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
+use tokio_util::io::StreamReader;
 
-use chrono::{DateTime, Duration, Local};
-use log::info;
-use machine::{machine, transitions};
-use pin_project_lite::pin_project;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
-
-use crate::recording_pool::recording_task::eit_parser::*;
-use crate::recording_pool::recording_task::io_object::IoObject;
-use crate::recording_pool::REC_POOL;
-use crate::RecordingTaskDescription;
-
-mod eit_parser;
-mod io_object;
-
-machine!(
-    #[derive(Clone, Copy, PartialEq, Debug)]
-    pub(crate) enum RecordingState {
-        A {
-            since: DateTime<Local>,
-        },
-        B1 {
-            since: DateTime<Local>,
-        },
-        B2 {
-            since: DateTime<Local>,
-        },
-        Rec {
-            since: DateTime<Local>,
-            end: DateTime<Local>,
-        },
-        Timeout {},
-        Success {},
-    }
-);
-impl IntoB2 for A {}
-impl IntoB2 for B1 {}
-
-impl IntoRec for A {}
-impl IntoRec for B1 {}
-impl IntoRec for B2 {}
-
-trait IntoB2 {
-    fn on_found_in_following(self, _: FoundInFollowing) -> B2
-    where
-        Self: Sized,
-    {
-        B2 {
-            since: Local::now(),
-        }
-    }
-}
-
-trait IntoRec {
-    fn on_found_in_present(self, present: FoundInPresent) -> Rec
-    where
-        Self: Sized,
-    {
-        Rec {
-            since: Local::now(),
-            end: present
-                .duration
-                .map_or(Local::now() + Duration::minutes(5), |d| {
-                    present.start_at + d
-                }),
-        }
-    }
-}
-
-impl A {
-    fn on_wait_for_premiere(self, WaitForPremiere { start_at }: WaitForPremiere) -> RecordingState {
-        if start_at < Local::now() {
-            RecordingState::B1(B1 {
-                since: Local::now(),
-            })
-        } else if self.since + Duration::hours(1) < Local::now() {
-            RecordingState::Timeout(self::Timeout {})
-        } else {
-            RecordingState::A(A { since: self.since })
-        }
-    }
-}
-impl B1 {
-    fn on_wait_for_premiere(self, WaitForPremiere { start_at }: WaitForPremiere) -> RecordingState {
-        if self.since + Duration::hours(3) < Local::now() {
-            RecordingState::Timeout(self::Timeout {})
-        } else {
-            RecordingState::B1(B1 { since: self.since })
-        }
-    }
-}
-impl B2 {
-    fn on_found_in_following(self, _: FoundInFollowing) -> B2 {
-        self
-    }
-}
-impl Rec {
-    fn on_found_in_present(self, _: FoundInPresent) -> Rec {
-        self
-    }
-    fn on_wait_for_premiere(self, WaitForPremiere { start_at }: WaitForPremiere) -> Success {
-        Success {}
-    }
-}
-
-transitions!(RecordingState,
-    [
-        (A, FoundInPresent) => Rec,
-        (B1, FoundInPresent) => Rec,
-        (B2, FoundInPresent) => Rec,
-        (A, WaitForPremiere) => [A, B1],
-        (B1, WaitForPremiere) => [B1, Timeout],
-        (Rec, WaitForPremiere) => Success,
-        (A, FoundInFollowing) => B2,
-        (B1, FoundInFollowing) => B2,
-        (B2, FoundInFollowing) => B2,
-        (A, FoundInPresent) => Rec,
-        (B1, FoundInPresent) => Rec,
-        (B2, FoundInPresent) => Rec,
-        (Rec, FoundInPresent) => Rec
-    ]
-);
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct FoundInFollowing {
-    start_at: DateTime<Local>,
-    duration: Option<Duration>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct FoundInPresent {
-    start_at: DateTime<Local>,
-    duration: Option<Duration>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct WaitForPremiere {
-    start_at: DateTime<Local>,
+pub enum RecExitType {
+    Aborted(u64),
+    Success(u64),
 }
 
 pin_project! {
-    pub(crate) struct RecordingTask {
+    pub(crate) struct RecTask {
         #[pin]
-        target: Option<IoObject>,
-        pub(crate) eit: EitParser,
+        rec: Option<IoObject>,
+        src: Box<dyn AsyncBufRead + Unpin>,
+        amt: u64,
+        eit: TsDuckInner,
         next_state: RecordingState,
         pub(crate) state: RecordingState,
         pub(crate) id: i64,
@@ -154,75 +40,75 @@ pin_project! {
     }
 }
 
-impl RecordingTask {
-    pub(crate) async fn new(info: &RecordingTaskDescription) -> Result<Self, Error> {
-        let info = info.clone();
-        info!("Create a new recording task: {:?}", info);
-        let mut file_location = info.save_dir_location;
-        // Specify file name here
-        file_location.push(format!(
-            "{}_{}.m2ts-tmp",
-            info.program.event_id,
-            info.program
-                .name
-                .as_ref()
-                .unwrap_or(&"untitled".to_string())
-        ));
-        let target = Some(IoObject::new(None).await?);
+impl RecTask {
+    pub(crate) async fn new(m_url: &str, id: i64) -> io::Result<Self> {
+        let (src, rec, file_location) = {
+            let info = REC_POOL
+                .read()
+                .unwrap()
+                .get(&id)
+                .expect(
+                    "A new task cannot be spawned because the RecordingTaskDescription is not found. This is unreachable.",
+                )
+                .clone();
+
+            // Output location
+            info!("Create a new recording task: {:?}", info);
+            let mut file_location = info.save_dir_location;
+            // Specify file name here
+            file_location.push(format!(
+                "{}_{}.m2ts-tmp",
+                info.program.event_id,
+                info.program
+                    .name
+                    .as_ref()
+                    .unwrap_or(&"untitled".to_string())
+            ));
+
+            // Create a new task
+            let rec = Some(IoObject::new(None).await?);
+
+            let mut c = Configuration::new();
+            c.base_path = m_url.to_string();
+            // Get Ts Stream
+            let src =
+                match get_program_stream(&c, info.program.id, None, None).await {
+                    Ok(value) => StreamReader::new(value.bytes_stream().map_err(
+                        |e: mirakurun_client::Error| io::Error::new(std::io::ErrorKind::Other, e),
+                    )),
+                    Err(e) => return Err(io::Error::new(std::io::ErrorKind::Other, e)),
+                };
+            (src, rec, file_location)
+        };
+
+        //Eit
+        let eit = TsDuckInner::new()?;
+
         Ok(Self {
-            target,
-            eit: EitParser::new()?,
+            rec,
+            src: Box::new(src),
+            amt: 0,
+            eit,
             next_state: RecordingState::A(A {
                 since: Local::now(),
             }),
             state: RecordingState::A(A {
                 since: Local::now(),
             }),
-            id: info.program.id,
+            id,
             file_location,
         })
     }
 }
 
-impl AsyncWrite for RecordingTask {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
+impl Future for RecTask {
+    type Output = io::Result<RecExitType>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut me = self.project();
 
-        // Get RecordingDescription. If not exist, return error.
-        if let Some(item) = REC_POOL.read().unwrap().at(me.id) {
-            // Evaluate states and control IoObject
-            if me.eit.rx.has_changed().unwrap() {
-                let after = match *me.eit.rx.borrow_and_update() {
-                    EitDetected::P(ref inner) => me.state.on_found_in_present(inner.clone()),
-                    EitDetected::F(ref inner) => me.state.on_found_in_following(inner.clone()),
-                    EitDetected::NotFound { since } => {
-                        if Local::now() - since > Duration::seconds(30) {
-                            //停波中
-                            panic!(
-                                "No EIT received for 30 secs. Check the child process and signal"
-                            )
-                        } else {
-                            me.state.on_wait_for_premiere(WaitForPremiere {
-                                start_at: REC_POOL
-                                    .read()
-                                    .unwrap()
-                                    .at(me.id)
-                                    .unwrap()
-                                    .program
-                                    .start_at
-                                    .into(),
-                            })
-                        }
-                    }
-                };
-
-                *me.next_state = after;
-            }
-
+        while let Some(item) = REC_POOL.read().unwrap().get(me.id) {
+            // State transition
             if me.state != me.next_state {
                 info!(
                     "[id={}] Transition from {:?} to {:?}",
@@ -252,7 +138,7 @@ impl AsyncWrite for RecordingTask {
                         // Execute the future, blocking the current thread until completion
                         let future = async {
                             let new_writer = IoObject::new(new_path).await.unwrap();
-                            if let Some(mut old_writer) = me.target.replace(new_writer) {
+                            if let Some(mut old_writer) = me.rec.replace(new_writer) {
                                 old_writer.shutdown().await.unwrap()
                             }
                             info!(
@@ -265,29 +151,58 @@ impl AsyncWrite for RecordingTask {
                     });
                 });
 
-                Poll::Pending
-            } else {
-                let _ = Pin::new(&mut me.eit).poll_write(cx, buf);
-                me.target.as_pin_mut().unwrap().poll_write(cx, buf)
+                return Poll::Pending;
             }
-        } else {
-            // RecordDescription not found
-            me.target
-                .as_pin_mut()
-                .unwrap()
-                .poll_shutdown(cx)
-                .map_ok(|_| 0)
+
+            // 読み取りの試行
+            let buffer = ready!(Pin::new(&mut me.src).poll_fill_buf(cx))?;
+            if buffer.is_empty() {
+                ready!(me.rec.as_pin_mut().unwrap().poll_flush(cx))?;
+                return Poll::Ready(Ok(RecExitType::Success(*me.amt)));
+            }
+
+            // Evaluate states and control IoObject
+            if me.eit.rx.has_changed().unwrap() {
+                let after = match *me.eit.rx.borrow_and_update() {
+                    EitDetected::P(ref inner) => me.state.on_found_in_present(inner.clone()),
+                    EitDetected::F(ref inner) => me.state.on_found_in_following(inner.clone()),
+                    EitDetected::NotFound { since } => {
+                        if Local::now() - since > Duration::seconds(30) {
+                            //停波中
+                            panic!(
+                                "No EIT received for 30 secs. Check the child process and signal"
+                            )
+                        } else {
+                            me.state.on_wait_for_premiere(WaitForPremiere {
+                                start_at: REC_POOL
+                                    .read()
+                                    .unwrap()
+                                    .get(me.id)
+                                    .unwrap()
+                                    .program
+                                    .start_at
+                                    .into(),
+                            })
+                        }
+                    }
+                };
+                *me.next_state = after;
+            }
+            // tstablesへ書き込み
+            me.eit
+                .stdin
+                .write_all(buffer)
+                .expect("Writing to subprocess failed.");
+
+            // 書き込みの試行
+            let i = ready!(me.rec.as_mut().as_pin_mut().unwrap().poll_write(cx, buffer))?;
+            if i == 0 {
+                return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+            }
+            *me.amt += i as u64;
+            Pin::new(&mut *me.src).consume(i);
         }
-    }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let me = self.project();
-        me.target.as_pin_mut().unwrap().poll_flush(cx)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        let me = self.project();
-        info!("id: {} is shutting down...", me.id);
-        me.target.as_pin_mut().unwrap().poll_shutdown(cx)
+        Poll::Ready(Ok(RecExitType::Aborted(*me.amt)))
     }
 }

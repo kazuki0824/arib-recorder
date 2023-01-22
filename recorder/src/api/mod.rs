@@ -71,7 +71,7 @@ pub(crate) async fn api_startup(cx: Arc<Context>) {
             get(move || async move {
                 match REC_POOL.read() {
                     Ok(res) => Ok(response::Json(
-                        res.iter()
+                        res.values()
                             .cloned()
                             .collect::<Vec<RecordingTaskDescription>>(),
                     )),
