@@ -49,31 +49,29 @@ impl TsDuckInner {
         let stdin = child.stdin.take().unwrap();
         let stderr = child.stderr.take().unwrap();
 
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let mut reader = BufReader::new(stderr);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
 
-                let mut line: String = Default::default();
-                while let Ok(n) = reader.read_line(&mut line) {
-                    if n == 0 {
-                        break;
+            let mut line: String = Default::default();
+            while let Ok(n) = reader.read_line(&mut line) {
+                if n == 0 {
+                    break;
+                }
+
+                match serde_json::from_str::<Value>(&line) {
+                    Ok(data) => {
+                        println!("Data: {:#?}", data);
+                        tx.send(EitDetected::F(FoundInFollowing {
+                            start_at: Default::default(),
+                            duration: None,
+                        }))
+                        .unwrap();
                     }
-
-                    match serde_json::from_str::<Value>(&line) {
-                        Ok(data) => {
-                            println!("Data: {:?}", data);
-                            tx.send(EitDetected::F(FoundInFollowing {
-                                start_at: Default::default(),
-                                duration: None,
-                            }))
-                            .unwrap();
-                        }
-                        Err(e) => {
-                            eprintln!("Error while parsing JSON: {:?}", e);
-                        }
+                    Err(e) => {
+                        eprintln!("Error while parsing JSON: {:?}", e);
                     }
                 }
-            });
+            }
         });
 
         Ok(Self { stdin, child, rx })

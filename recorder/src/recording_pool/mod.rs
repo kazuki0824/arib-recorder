@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use log::{debug, info};
+use log::{debug, error, info};
 use once_cell::sync::Lazy;
 use tokio::sync::mpsc::Receiver;
 
@@ -28,7 +28,8 @@ pub(crate) async fn recording_pool_startup(
 
         match received {
             Some(RecordControlMessage::CreateOrUpdate(info)) => {
-                let task = RecTask::new(&cx.mirakurun_base_uri, info.program.id);
+                unimplemented!("");
+                let task = RecTask::new(cx.mirakurun_base_uri.clone(), info.program.id);
                 REC_POOL.write().unwrap().insert(info.program.id, info);
             }
             Some(RecordControlMessage::Remove(id)) => {
@@ -39,18 +40,30 @@ pub(crate) async fn recording_pool_startup(
             Some(RecordControlMessage::TryCreate(info)) => {
                 let view_title_name = info.program.name.clone().unwrap_or("untitled".to_string());
 
-                let mut pool_ref = REC_POOL.write().unwrap();
-                if !pool_ref.contains_key(&info.program.id) {
-                    let id = info.program.id;
-                    let task = RecTask::new(&cx.mirakurun_base_uri, id);
-                    pool_ref.insert(info.program.id, info);
-                    info!("A new program (id={}) has been added to recording queue because of an incoming message.", id)
-                } else {
-                    info!(
-                        "{}(id={}) is already being recorded, thus it's skipped.",
-                        view_title_name, info.program.id
-                    )
+                {
+                    let mut pool_ref = REC_POOL.write().unwrap();
+                    if pool_ref.contains_key(&info.program.id) {
+                        info!(
+                            "{}(id={}) is already being recorded, thus it's skipped.",
+                            view_title_name, info.program.id
+                        );
+                        continue;
+                    } else {
+                        pool_ref.insert(info.program.id, info.clone())
+                    }
                 };
+
+                let id = info.program.id;
+                let task = match RecTask::new(cx.mirakurun_base_uri.clone(), id).await {
+                    Ok(task) => task,
+                    Err(e) => {
+                        error!("{}", e);
+                        continue;
+                    }
+                };
+                tokio::spawn(task);
+
+                info!("A new program (id={}) has been added to recording queue because of an incoming message.", id)
             }
             None => continue,
         };

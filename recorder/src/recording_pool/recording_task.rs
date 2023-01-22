@@ -30,7 +30,7 @@ pin_project! {
     pub(crate) struct RecTask {
         #[pin]
         rec: Option<IoObject>,
-        src: Box<dyn AsyncBufRead + Unpin>,
+        src: Box<dyn AsyncBufRead + Unpin + Send>,
         amt: u64,
         eit: TsDuckInner,
         next_state: RecordingState,
@@ -41,7 +41,7 @@ pin_project! {
 }
 
 impl RecTask {
-    pub(crate) async fn new(m_url: &str, id: i64) -> io::Result<Self> {
+    pub(crate) async fn new(m_url: String, id: i64) -> io::Result<Self> {
         let (src, rec, file_location) = {
             let info = REC_POOL
                 .read()
@@ -107,7 +107,7 @@ impl Future for RecTask {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut me = self.project();
 
-        while let Some(item) = REC_POOL.read().unwrap().get(me.id) {
+        while let Some(item) = { REC_POOL.read().unwrap().get(me.id) } {
             // State transition
             if me.state != me.next_state {
                 info!(
@@ -193,9 +193,15 @@ impl Future for RecTask {
                 .stdin
                 .write_all(buffer)
                 .expect("Writing to subprocess failed.");
+            me.eit.stdin.flush().expect("Writing to subprocess failed.");
 
             // 書き込みの試行
             let i = ready!(me.rec.as_mut().as_pin_mut().unwrap().poll_write(cx, buffer))?;
+            info!(
+                "{} bytes has been writen to {}",
+                i,
+                me.file_location.display()
+            );
             if i == 0 {
                 return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
             }
