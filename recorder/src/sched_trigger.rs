@@ -11,6 +11,7 @@ use ulid::Ulid;
 
 use crate::context::Context;
 use crate::recording_planner::PlanUnit;
+use crate::recording_pool::REC_POOL;
 use crate::{RecordControlMessage, RecordingTaskDescription};
 
 pub(crate) struct SchedQueue {
@@ -119,15 +120,17 @@ pub(crate) async fn sched_trigger_startup(
 
             if remainder > 0 || found - remainder > 0 {
                 info!(
-                    "{} schedule units remains. {} of unit(s) dropped.",
+                    "{} schedule units remains. {} of unit(s) dropped. {} of unit(s) are ongoing.",
                     remainder,
-                    found - remainder
+                    found - remainder,
+                    REC_POOL.iter().count(),
                 )
             } else {
                 debug!(
-                    "{} schedule units remains. {} of unit(s) dropped.",
+                    "{} schedule units remains. {} of unit(s) dropped. {} of unit(s) are ongoing.",
                     remainder,
-                    found - remainder
+                    found - remainder,
+                    REC_POOL.iter().count(),
                 )
             }
 

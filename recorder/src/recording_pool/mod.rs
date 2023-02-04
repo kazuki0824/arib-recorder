@@ -1,18 +1,20 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use lockfree::map::Map;
+use std::sync::Arc;
 
 use log::{debug, error, info};
 use once_cell::sync::Lazy;
 use tokio::sync::mpsc::Receiver;
+use tokio::task::{AbortHandle, JoinSet};
 
 use crate::context::Context;
-use crate::recording_pool::recording_task::RecTask;
+use crate::recording_pool::recording_task::{RecExitType, RecTask};
 use crate::{RecordControlMessage, RecordingTaskDescription};
 
 mod recording_task;
 
-pub(crate) static REC_POOL: Lazy<RwLock<HashMap<i64, RecordingTaskDescription>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+pub(crate) static mut THREAD_POOL: Lazy<JoinSet<std::io::Result<RecExitType>>> =
+    Lazy::new(|| JoinSet::new());
+pub(crate) static REC_POOL: Lazy<Map<i64, RecordingTaskDescription>> = Lazy::new(|| Map::new());
 
 pub(crate) async fn recording_pool_startup(
     cx: Arc<Context>,
@@ -28,44 +30,72 @@ pub(crate) async fn recording_pool_startup(
 
         match received {
             Some(RecordControlMessage::CreateOrUpdate(info)) => {
-                unimplemented!("");
-                let task = RecTask::new(cx.mirakurun_base_uri.clone(), info.program.id);
-                REC_POOL.write().unwrap().insert(info.program.id, info);
+                let view_title_name = info.program.name.clone().unwrap_or("untitled".to_string());
+
+                let contains = REC_POOL.iter().any(|v| *v.key() == info.program.id);
+                if contains {
+                    debug!(
+                        "{}(id={}) is already being recorded, thus it's overwritten.",
+                        view_title_name, info.program.id
+                    );
+                    REC_POOL.insert(info.program.id, info.clone());
+                } else {
+                    let _handle = match insert_task(cx.clone(), info.clone()).await {
+                        Ok(h) => h,
+                        Err(e) => {
+                            error!("{}", e);
+                            continue;
+                        }
+                    };
+                }
+                info!(
+                    "CreateOrUpdate for {} successfully processed.",
+                    info.program.id
+                );
             }
             Some(RecordControlMessage::Remove(id)) => {
-                if REC_POOL.write().unwrap().remove(&id).is_some() {
+                if REC_POOL.remove(&id).is_some() {
                     info!("id: {} is removed from recording pool.", id)
                 }
             }
             Some(RecordControlMessage::TryCreate(info)) => {
                 let view_title_name = info.program.name.clone().unwrap_or("untitled".to_string());
 
-                {
-                    let mut pool_ref = REC_POOL.write().unwrap();
-                    if pool_ref.contains_key(&info.program.id) {
-                        info!(
+                let _kill_handle = {
+                    let contains = REC_POOL.iter().any(|v| *v.key() == info.program.id);
+                    if contains {
+                        debug!(
                             "{}(id={}) is already being recorded, thus it's skipped.",
                             view_title_name, info.program.id
                         );
                         continue;
                     } else {
-                        pool_ref.insert(info.program.id, info.clone())
+                        match insert_task(cx.clone(), info.clone()).await {
+                            Ok(h) => h,
+                            Err(e) => {
+                                error!("{}", e);
+                                continue;
+                            }
+                        }
                     }
                 };
-
-                let id = info.program.id;
-                let task = match RecTask::new(cx.mirakurun_base_uri.clone(), id).await {
-                    Ok(task) => task,
-                    Err(e) => {
-                        error!("{}", e);
-                        continue;
-                    }
-                };
-                tokio::spawn(task);
-
-                info!("A new program (id={}) has been added to recording queue because of an incoming message.", id)
+                info!("TryCreate for {} successfully processed.", info.program.id);
             }
             None => continue,
         };
     }
+}
+
+async fn insert_task(
+    cx: Arc<Context>,
+    info: RecordingTaskDescription,
+) -> std::io::Result<AbortHandle> {
+    info!(
+        "id: {} is newly inserted into recording pool.",
+        info.program.id
+    );
+
+    let task = RecTask::new(cx.mirakurun_base_uri.clone(), info).await?;
+
+    unsafe { Ok(THREAD_POOL.spawn(task)) }
 }

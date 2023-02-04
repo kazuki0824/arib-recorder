@@ -11,17 +11,18 @@ structopt = "0.3.26"
 log = "~0.4.0"
 env_logger = "~0.10"
 
-mirakurun_client = "3.9.0-rc.2.1"
+mirakurun_client = "3.9.0-rc.2"
 meilisearch-sdk = "0.21.2"
 
 #notify-rust = "4.5.10"
 
-axum = "^0.5"
+axum = "^0.6"
 futures-util = { version = "^0.3", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal"], default-features = false }
 tokio-process-stream = "0.3.0"
 tokio-stream = { version = "~0.1", features = ["io-util"], default-features = false }
 tokio-util = { version = "~0.7", features = ["io"], default-features = false }
+lockfree = "0.5.1"
 pin-project-lite = "0.2.9"
 
 machine = "0.3.0"

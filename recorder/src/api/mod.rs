@@ -69,14 +69,11 @@ pub(crate) async fn api_startup(cx: Arc<Context>) {
         .route(
             "/q/recording",
             get(move || async move {
-                match REC_POOL.read() {
-                    Ok(res) => Ok(response::Json(
-                        res.values()
-                            .cloned()
-                            .collect::<Vec<RecordingTaskDescription>>(),
-                    )),
-                    Err(e) => Err(e.to_string().into_response()),
-                }
+                let content = REC_POOL
+                    .iter()
+                    .map(|c| (*c.key(), c.val().clone()))
+                    .collect::<Vec<(i64, RecordingTaskDescription)>>();
+                response::Json(content)
             }),
         )
         .route(

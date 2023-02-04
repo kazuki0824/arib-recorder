@@ -86,7 +86,7 @@ impl Rec {
     fn on_found_in_present(self, _: FoundInPresent) -> Rec {
         self
     }
-    fn on_wait_for_premiere(self, WaitForPremiere { start_at }: WaitForPremiere) -> Success {
+    fn on_wait_for_premiere(self, WaitForPremiere { .. }: WaitForPremiere) -> Success {
         Success {}
     }
 }

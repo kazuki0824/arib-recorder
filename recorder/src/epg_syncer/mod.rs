@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use meilisearch_sdk::indexes::Index;
 use meilisearch_sdk::Client;
 use mirakurun_client::apis::configuration::Configuration;
@@ -103,7 +103,7 @@ impl EpgSyncManager {
                 reconnection_counter += 1;
                 if reconnection_counter >= RECONNECTION_MAX {
                     //TODO: Avoid excessive load
-                    warn!("Reconnection limit reached.")
+                    debug!("Reconnection limit reached.")
                 }
                 // Subscribe NDJSON here.
                 // Store programs data into DB, and keep track of them using Mirakurun's Events API.
@@ -123,8 +123,7 @@ impl EpgSyncManager {
                             if line.trim().eq_ignore_ascii_case("[") {
                                 continue;
                             };
-                            debug!("{}", line);
-                            info!("length = {}", line.len());
+                            debug!("feed length = {}", line.len());
                             line
                         }
                         _ => continue,
@@ -132,7 +131,7 @@ impl EpgSyncManager {
 
                     match serde_json::from_str(&next_str) {
                         Ok(EventContent::Service(value)) => {
-                            info!("Updating the service: {:#?}", value);
+                            info!("Updating the service: {:?}", value);
                             match push_services_ranges(&self.index_services, &vec![value]).await {
                                 Ok(_) => info!("Updates have been successfully applied."),
                                 Err(e) => error!("{}", e),
@@ -140,7 +139,6 @@ impl EpgSyncManager {
                             continue;
                         }
                         Ok(EventContent::Program(value)) => {
-                            info!("EIT[p/f] from Mirakurun. \n{:?}", &value);
                             match push_programs_ranges(&self.index_programs, &vec![value.clone()])
                                 .await
                             {
@@ -149,8 +147,9 @@ impl EpgSyncManager {
                                     if let Ok(mut q_schedules) = self.cx.q_schedules.write() {
                                         q_schedules.items.iter_mut().for_each(|mut f| {
                                             if value.id == f.program.id {
+                                                info!("EIT[p/f] from Mirakurun. \n{:?}", &value);
                                                 info!(
-                                                    "Program Id={} has been overwritten.",
+                                                    "Program Id={} in q_schedules has been overwritten.",
                                                     value.id
                                                 );
                                                 f.program = value.clone();
@@ -166,12 +165,12 @@ impl EpgSyncManager {
                             info!("Tuner configuration has been changed. {:?}", value)
                         }
                         Err(e) => {
-                            error!("In /events, {}", e);
+                            debug!("In /events, {:?}", e);
                             break 'inner;
                         }
                     }
                 }
-                warn!("Trying to recover /events subscription.")
+                debug!("Trying to recover /events subscription.")
             }
         };
 
