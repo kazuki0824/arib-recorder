@@ -1,10 +1,10 @@
 use crate::recording_pool::recording_task::states::{FoundInFollowing, FoundInPresent};
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
-use serde_json::{Map, Value};
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
 use log::{info, warn};
 use mirakurun_client::models::Program;
+use serde_json::{Map, Value};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
 use tokio::sync::watch;
 
 pub(super) struct TsDuckInner {
@@ -46,7 +46,7 @@ impl TsDuckInner {
                     // "--section-number",
                     // "0-1",
                     "--flush",
-                    "--no-pager"
+                    "--no-pager",
                 ])
                 .spawn()?
         };
@@ -65,26 +65,51 @@ impl TsDuckInner {
                     break;
                 }
 
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(Value::Object(ref body)) => {
-                        let (nid, sid) = (body["original_network_id"].as_i64().unwrap(), body["service_id"].as_i64().unwrap());
-                        let result = Self::extract_eit(body, &info);
-
-                        let to_be_written = match (&*tx.borrow(), &result) {
-                            (EitDetected::NotFound {since}, None) => EitDetected::NotFound {since: since.clone()},
-                            (_, None) => EitDetected::NotFound {since: Local::now()},
-                            _ => result.unwrap()
+                let to_be_written = {
+                    // scan each lines until found
+                    let mut result = None;
+                    for line in line.split('\n') {
+                        match serde_json::from_str::<Value>(&line) {
+                            Ok(Value::Object(ref body)) => {
+                                let (nid, sid) = (
+                                    body["original_network_id"].as_i64().unwrap(),
+                                    body["service_id"].as_i64().unwrap(),
+                                );
+                                if let Some(eit) = Self::extract_eit(body, &info) {
+                                    result = Some(eit);
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Error while parsing tstables' output: {:?}", e);
+                                let mut w = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .write(true)
+                                    .open(format!("./logs/{}.log", info.name.as_ref().unwrap()))
+                                    .unwrap();
+                                writeln!(w, "{:?}", e);
+                                writeln!(w, "{}", line);
+                                continue;
+                            }
+                            _ => todo!(),
                         };
-
-                        info!("[id={}] Send: {:?}", info.id, to_be_written);
-                        tx.send(to_be_written).unwrap();
                     }
-                    Err(e) => {
-                        warn!("Error while parsing tstables' output: {:?}", e);
 
-                    },
-                    _ => todo!()
+                    // Assume result
+                    match (&*tx.borrow(), &result) {
+                        (EitDetected::NotFound { since }, None) => EitDetected::NotFound {
+                            since: since.clone(),
+                        },
+                        (_, None) => EitDetected::NotFound {
+                            since: Local::now(),
+                        },
+                        _ => result.unwrap(),
+                    }
                 };
+
+                info!("[id={}] Send: {:?}", info.id, to_be_written);
+                tx.send(to_be_written).unwrap();
             }
         });
 
@@ -93,7 +118,11 @@ impl TsDuckInner {
 
     fn extract_eit(body: &Map<String, Value>, info: &Program) -> Option<EitDetected> {
         if let Some(eits) = body["#nodes"].as_array() {
-            let filtered = eits.iter().filter_map(|eit| eit.as_object()).filter(|eit| eit.contains_key("event_id") && eit.contains_key("start_time") && eit.contains_key("duration"));
+            let filtered = eits.iter().filter_map(|eit| eit.as_object()).filter(|eit| {
+                eit.contains_key("event_id")
+                    && eit.contains_key("start_time")
+                    && eit.contains_key("duration")
+            });
 
             let mut result: Option<EitDetected> = None;
 
@@ -103,19 +132,34 @@ impl TsDuckInner {
                 let eid = item.get("event_id").unwrap().as_i64().unwrap();
                 // let id = 10000000000 * nid + 100000 * sid + eid;
 
-                if  eid == info.id % 100000 {
+                if eid == info.id % 100000 {
                     info!("hit");
-                    let start_at = item.get("start_time").unwrap().as_str().unwrap_or("not found");
+                    let start_at = item
+                        .get("start_time")
+                        .unwrap()
+                        .as_str()
+                        .unwrap_or("not found");
                     let duration = item.get("duration").and_then(|f| f.as_str());
 
-                    let parsed_start = NaiveDateTime::parse_from_str(start_at, "%Y-%m-%d %H:%M:%S").ok().and_then(|t| Local.from_local_datetime(&t).single());
+                    let parsed_start = NaiveDateTime::parse_from_str(start_at, "%Y-%m-%d %H:%M:%S")
+                        .ok()
+                        .and_then(|t| Local.from_local_datetime(&t).single());
                     if let Some(start_at) = parsed_start {
                         // send result
                         let duration = duration.map(|s| {
                             let mut reverse_split = s.rsplit(':');
-                            let sec = reverse_split.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-                            let min = reverse_split.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-                            let hour = reverse_split.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                            let sec = reverse_split
+                                .next()
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .unwrap_or(0);
+                            let min = reverse_split
+                                .next()
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .unwrap_or(0);
+                            let hour = reverse_split
+                                .next()
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .unwrap_or(0);
 
                             let sec = Duration::seconds(sec);
                             let min = Duration::minutes(min);
@@ -125,22 +169,20 @@ impl TsDuckInner {
                         });
                         if Local::now() < start_at {
                             // EIT[following]
-                            result = Some(EitDetected::F(FoundInFollowing {
-                                start_at,
-                                duration,
-                            }));
+                            result = Some(EitDetected::F(FoundInFollowing { start_at, duration }));
                         } else {
                             // EIT[present]
-                            result = Some(EitDetected::P(FoundInPresent {
-                                start_at,
-                                duration,
-                            }));
+                            result = Some(EitDetected::P(FoundInPresent { start_at, duration }));
                         }
-                        break
-                    } else { continue }
+                        break;
+                    } else {
+                        continue;
+                    }
                 }
             }
             result
-        } else { None }
+        } else {
+            None
+        }
     }
 }
