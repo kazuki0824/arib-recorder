@@ -144,7 +144,8 @@ impl EpgSyncManager {
                             {
                                 Ok(_) => {
                                     // Update schedules
-                                    if let Ok(mut q_schedules) = self.cx.q_schedules.write() {
+                                    {
+                                        let mut q_schedules = self.cx.q_schedules.write().await;
                                         q_schedules.items.iter_mut().for_each(|mut f| {
                                             if value.id == f.program.id {
                                                 info!("EIT[p/f] from Mirakurun. \n{:?}", &value);

@@ -84,7 +84,7 @@ pub(crate) async fn sched_trigger_startup(
     loop {
         debug!("Now locking q_schedules.");
         {
-            let mut q_schedules = cx.q_schedules.write().unwrap();
+            let mut q_schedules = cx.q_schedules.write().await;
 
             let (found, remainder) = {
                 let found = q_schedules.items.len();

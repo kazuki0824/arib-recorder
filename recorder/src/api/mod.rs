@@ -31,7 +31,7 @@ pub(crate) async fn api_startup(cx: Arc<Context>) {
         .route(
             "/",
             get(move || async move {
-                serde_json::to_string(&cx1.q_schedules.read().unwrap().items).unwrap()
+                serde_json::to_string(&cx1.q_schedules.read().await.items).unwrap()
             }),
         )
         .route(
@@ -59,7 +59,7 @@ pub(crate) async fn api_startup(cx: Arc<Context>) {
         .route(
             "/q/sched",
             get(move || async move {
-                match cx4.q_schedules.read() {
+                match cx4.q_schedules.try_read() {
                     Ok(res) => Ok(response::Json(res.items.clone())),
                     Err(e) => Err(e.to_string().into_response()),
                 }
@@ -83,7 +83,7 @@ pub(crate) async fn api_startup(cx: Arc<Context>) {
         .route(
             "/q/rules",
             get(move || async move {
-                match cx7.q_rules.read() {
+                match cx7.q_rules.try_read() {
                     Ok(res) => Ok(response::Json(
                         res.iter()
                             .map(|f| (f.0.clone(), f.1.clone()))
@@ -125,7 +125,7 @@ async fn put_recording_schedule(
         is_active: true,
     };
 
-    let items = &mut cx.q_schedules.write().unwrap().items;
+    let items = &mut cx.q_schedules.write().await.items;
     if items.iter().all(|f| f.program.id != s.program.id) {
         items.push(s.clone());
     }
@@ -153,7 +153,7 @@ async fn delete_sched(
     // Delete
     cx.q_schedules
         .write()
-        .unwrap()
+        .await
         .items
         .retain(|f| f.program.id == id);
 

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use structopt::StructOpt;
 
