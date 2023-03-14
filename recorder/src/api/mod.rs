@@ -1,161 +1,198 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::response::IntoResponse;
-use axum::{
-    response,
-    routing::{delete, get, put},
-    Router,
-};
+use chrono::{DateTime, Duration, Local};
 use log::info;
+use meilisearch_sdk::errors::Error;
+use mirakurun_client::models::Program;
+use tonic::transport::Server;
+use tonic::Code;
 use ulid::Ulid;
 
+use crate::api::grpc_page::{schedule_server::*, search_server::*, *};
 use crate::context::Context;
-use crate::db_utils::{get_all_programs, get_all_services, get_temporary_accessor, pull_program};
+use crate::db_utils::{
+    get_all_programs, get_all_services, get_temporary_db_accessor, perform_search_query,
+    pull_program,
+};
 use crate::recording_planner::PlanUnit;
 use crate::recording_pool::REC_POOL;
 use crate::sched_trigger::Schedule;
 use crate::RecordingTaskDescription;
 
-pub(crate) async fn api_startup(cx: Arc<Context>) {
-    let cx1 = cx.clone();
-    let cx2 = cx.clone();
-    let cx3 = cx.clone();
-    let cx4 = cx.clone();
-    let cx5 = cx.clone();
-    let cx6 = cx.clone();
-    let cx7 = cx.clone();
+pub(crate) async fn api_startup(cx: Arc<Context>) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = "127.0.0.1:50051".parse()?;
 
-    let app = Router::new()
-        .route(
-            "/",
-            get(move || async move {
-                serde_json::to_string(&cx1.q_schedules.read().await.items).unwrap()
-            }),
-        )
-        .route(
-            "/programs",
-            get(move || async {
-                let client = get_temporary_accessor(cx2);
-                let res = get_all_programs(&client).await;
-                match res {
-                    Ok(res) => Ok(response::Json(res)),
-                    Err(e) => Err(e.to_string().into_response()),
-                }
-            }),
-        )
-        .route(
-            "/services",
-            get(|| async {
-                let client = get_temporary_accessor(cx3);
-                let res = get_all_services(&client).await;
-                match res {
-                    Ok(res) => Ok(response::Json(res)),
-                    Err(e) => Err(e.to_string().into_response()),
-                }
-            }),
-        )
-        .route(
-            "/q/sched",
-            get(move || async move {
-                match cx4.q_schedules.try_read() {
-                    Ok(res) => Ok(response::Json(res.items.clone())),
-                    Err(e) => Err(e.to_string().into_response()),
-                }
-            }),
-        )
-        .route("/q/sched", delete(|p| delete_sched(cx5, p)))
-        .route(
-            "/q/recording",
-            get(move || async move {
-                let content = REC_POOL
-                    .iter()
-                    .map(|c| (*c.key(), c.val().clone()))
-                    .collect::<Vec<(i64, RecordingTaskDescription)>>();
-                response::Json(content)
-            }),
-        )
-        .route(
-            "/new/sched",
-            put(move |p| async move { put_recording_schedule(cx6, p).await }),
-        )
-        .route(
-            "/q/rules",
-            get(move || async move {
-                match cx7.q_rules.try_read() {
-                    Ok(res) => Ok(response::Json(
-                        res.iter()
-                            .map(|f| (f.0.clone(), f.1.clone()))
-                            .collect::<Vec<(Ulid, PlanUnit)>>(),
-                    )),
-                    Err(e) => Err(e.to_string().into_response()),
-                }
-            }),
-        );
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    info!("listening on {}", addr);
-    let e = axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
-}
-
-async fn put_recording_schedule(
-    cx: Arc<Context>,
-    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-) -> Result<response::Json<Schedule>, String> {
-    let program = {
-        let client = get_temporary_accessor(&cx);
-        // Check input
-        let id = params
-            .get("id")
-            .ok_or("invalid query string\n")?
-            .parse::<i64>()
-            .map_err(|e| e.to_string())?;
-        // Pull
-        pull_program(&client, id)
-            .await
-            .or_else(|e| Err(e.to_string()))?
-    };
-    let s = Schedule {
-        program,
-        plan_id: None,
-        is_active: true,
-    };
-
-    let items = &mut cx.q_schedules.write().await.items;
-    if items.iter().all(|f| f.program.id != s.program.id) {
-        items.push(s.clone());
-    }
-
-    info!("Program {:?} (service_id={}, network_id={}, event_id={}) has been successfully added to sched_trigger.",
-        &s.program.description,
-        &s.program.service_id,
-        &s.program.network_id,
-        &s.program.event_id,
-    );
-    Ok(response::Json(s))
-}
-
-async fn delete_sched(
-    cx: Arc<Context>,
-    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-) -> Result<(), String> {
-    // Check input
-    let id = params
-        .get("id")
-        .ok_or("invalid query string\n")?
-        .parse::<i64>()
-        .map_err(|e| e.to_string())?;
-
-    // Delete
-    cx.q_schedules
-        .write()
-        .await
-        .items
-        .retain(|f| f.program.id == id);
+    Server::builder()
+        .add_service(MyGrpcScheduleHandler::new(cx.clone()))
+        .add_service(MyGrpcSearchHandler::new(cx.clone()))
+        .serve(addr)
+        .await?;
 
     Ok(())
+}
+
+pub mod grpc_page {
+    tonic::include_proto!("page");
+}
+
+/* Schedule */
+pub struct MyGrpcScheduleHandler {
+    cx: Arc<Context>,
+}
+impl MyGrpcScheduleHandler {
+    fn new(cx: Arc<Context>) -> ScheduleServer<Self> {
+        ScheduleServer::new(Self { cx })
+    }
+}
+/* Search */
+pub struct MyGrpcSearchHandler {
+    cx: Arc<Context>,
+}
+impl MyGrpcSearchHandler {
+    fn new(cx: Arc<Context>) -> SearchServer<Self> {
+        SearchServer::new(Self { cx })
+    }
+}
+
+/* Impl */
+#[tonic::async_trait]
+impl grpc_page::search_server::Search for MyGrpcSearchHandler {
+    async fn get_current_contents(
+        &self,
+        request: tonic::Request<()>,
+    ) -> Result<tonic::Response<SearchResult>, tonic::Status> {
+        let client = get_temporary_db_accessor(&self.cx);
+
+        let now = Local::now();
+        let (start, end) = (now, now + Duration::hours(6));
+        let query = format!(
+            "release_timestamp >= {} AND release_timestamp < {}",
+            start.timestamp(),
+            end.timestamp()
+        );
+
+        let results = perform_search_query::<Program>(&client, "_programs", &query).await;
+
+        match results {
+            Ok(results) => {
+                let items = results
+                    .hits
+                    .iter()
+                    .map(|raw_result| ProgramId {
+                        value: raw_result.result.id,
+                    })
+                    .collect::<Vec<ProgramId>>();
+
+                Ok(tonic::Response::new(SearchResult { items }))
+            }
+            Err(e) => Err(tonic::Status::new(Code::InvalidArgument, e.to_string())),
+        }
+    }
+    async fn simple_search_by_name(
+        &self,
+        request: tonic::Request<String>,
+    ) -> Result<tonic::Response<SearchResult>, tonic::Status> {
+        let client = get_temporary_db_accessor(&self.cx);
+
+        let query = request.into_inner();
+        let results = perform_search_query::<Program>(&client, "_programs", &query).await;
+
+        match results {
+            Ok(results) => {
+                let items = results
+                    .hits
+                    .iter()
+                    .map(|raw_result| ProgramId {
+                        value: raw_result.result.id,
+                    })
+                    .collect::<Vec<ProgramId>>();
+
+                Ok(tonic::Response::new(SearchResult { items }))
+            }
+            Err(e) => Err(tonic::Status::new(Code::InvalidArgument, e.to_string())),
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl grpc_page::schedule_server::Schedule for MyGrpcScheduleHandler {
+    async fn create(
+        &self,
+        request: tonic::Request<ProgramId>,
+    ) -> Result<tonic::Response<bool>, tonic::Status> {
+        let program = {
+            let client = get_temporary_db_accessor(&self.cx);
+            // Check input
+            let id = request.into_inner().value;
+            // Pull
+            pull_program(&client, id)
+                .await
+                .or_else(|e| Err(tonic::Status::new(tonic::Code::Internal, e.to_string())))?
+        };
+        let s = Schedule {
+            program,
+            plan_id: None,
+            is_active: true,
+        };
+
+        let items = &mut self.cx.q_schedules.write().await.items;
+        if items.iter().all(|f| f.program.id != s.program.id) {
+            items.push(s.clone());
+            info!("Program {:?} (service_id={}, network_id={}, event_id={}) has been successfully added to sched_trigger.",
+                &s.program.description,
+                &s.program.service_id,
+                &s.program.network_id,
+                &s.program.event_id,
+            );
+            Ok(tonic::Response::new(true))
+        } else {
+            Ok(tonic::Response::new(true))
+        }
+    }
+    async fn list_all(
+        &self,
+        request: tonic::Request<()>,
+    ) -> Result<tonic::Response<AllSchedules>, tonic::Status> {
+        let items = self
+            .cx
+            .q_schedules
+            .read()
+            .await
+            .items
+            .iter()
+            .map(|f| {
+                let id = Some(ProgramId {
+                    value: f.program.id,
+                });
+                let start_at: DateTime<Local> = DateTime::from(f.program.start_at);
+
+                let details = Some(ScheduleDetails {
+                    name: f.program.name.clone().unwrap(),
+                    start_at_human: start_at.to_rfc2822(),
+                    duration: f.program.duration,
+                    end_at_human: f
+                        .program
+                        .duration
+                        .map(|d| (start_at + Duration::milliseconds(d as i64)).to_rfc2822()),
+                });
+
+                ScheduleConfiguration { id, details }
+            })
+            .collect::<Vec<ScheduleConfiguration>>();
+        Ok(tonic::Response::new(AllSchedules { items }))
+    }
+    async fn remove(
+        &self,
+        request: tonic::Request<ProgramId>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        // Delete
+        let id = request.into_inner().value;
+        self.cx
+            .q_schedules
+            .write()
+            .await
+            .items
+            .retain(|f| f.program.id == id);
+        Ok(tonic::Response::new(()))
+    }
 }

@@ -1,6 +1,6 @@
-use lockfree::map::Map;
 use std::sync::Arc;
 
+use lockfree::map::Map;
 use log::{debug, error, info};
 use once_cell::sync::Lazy;
 use tokio::sync::mpsc::Receiver;
@@ -32,7 +32,9 @@ pub(crate) async fn recording_pool_startup(
             Some(RecordControlMessage::CreateOrUpdate(info)) => {
                 let view_title_name = info.program.name.clone().unwrap_or("untitled".to_string());
 
-                let contains = REC_POOL.iter().any(|v| *v.key() == info.program.id);
+                let contains = REC_POOL
+                    .iter()
+                    .any(|v| *v.key() == info.program.id && v.val().program == info.program);
                 if contains {
                     debug!(
                         "{}(id={}) is already being recorded, thus it's overwritten.",

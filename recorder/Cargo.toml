@@ -16,7 +16,11 @@ meilisearch-sdk = "0.21.2"
 
 #notify-rust = "4.5.10"
 
-axum = "^0.6"
+tonic = "0.8"
+tonic-web = "0.5.0"
+prost = "0.11"
+prost-types = "0.11"
+
 futures-util = { version = "^0.3", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal"], default-features = false }
 tokio-process-stream = "0.3.0"
@@ -32,6 +36,9 @@ ulid = { version = "^1.0", features = ["serde"] }
 serde = "^1.0"
 serde_derive = "^1.0"
 serde_json = "^1.0"
+
+[build-dependencies]
+tonic-build = "0.8"
 
 [profile.release]
 lto = true

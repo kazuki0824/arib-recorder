@@ -81,3 +81,16 @@ pub async fn get_all_services(client: &Client) -> Result<Vec<Service>, Error> {
         .await
         .and_then(|f| Ok(f.results))
 }
+
+pub async fn perform_search_query<T: for<'a> Deserialize<'a> + 'static>(
+    client: &Client,
+    index_name: &str,
+    query: &str,
+) -> Result<SearchResults<T>, Error> {
+    client
+        .index(index_name)
+        .search()
+        .with_filter(query)
+        .execute()
+        .await
+}

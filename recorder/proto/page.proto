@@ -1,0 +1,55 @@
+syntax = "proto3";
+package page;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+
+
+service Operation {
+  rpc Reload (google.protobuf.Empty) returns (google.protobuf.BoolValue);
+}
+service Externals {
+  rpc GetMirakurunApiEndpoint(google.protobuf.Empty) returns (google.protobuf.StringValue);
+}
+
+service Schedule {
+  rpc Create (ProgramId) returns (google.protobuf.BoolValue);
+  rpc ListAll (google.protobuf.Empty) returns (AllSchedules);
+  rpc Remove (ProgramId) returns (google.protobuf.Empty);
+}
+message ProgramId {
+  int64 value = 1;
+}
+message ScheduleDetails {
+  string name = 1;
+  string start_at_human = 2;
+  optional int32 duration = 3;
+  optional string end_at_human = 4;
+}
+message ScheduleConfiguration {
+  ProgramId id = 1;
+  ScheduleDetails details = 2;
+}
+message AllSchedules {
+  repeated ScheduleConfiguration items = 1;
+  //optional data
+}
+
+service Queue {
+
+}
+
+service Search {
+  rpc GetCurrentContents(google.protobuf.Empty) returns (SearchResult);
+  rpc SimpleSearchByName(google.protobuf.StringValue) returns (SearchResult);
+}
+message SearchResult {
+  repeated ProgramId items = 1;
+}
+
+service Plan {
+  rpc Create (ProgramId) returns (google.protobuf.BoolValue);
+  rpc ListAll (google.protobuf.Empty) returns (AllSchedules);
+  rpc Remove (ProgramId) returns (google.protobuf.Empty);
+}
