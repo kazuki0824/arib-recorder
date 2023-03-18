@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use log::{debug, error, info};
 use meilisearch_sdk::indexes::Index;
 use meilisearch_sdk::Client;
+use meilisearch_sdk::settings::Settings;
 use mirakurun_client::apis::configuration::Configuration;
 use mirakurun_client::models::event::EventContent;
 
@@ -47,7 +48,7 @@ impl EpgSyncManager {
         // Initialize Meilisearch client
         let search_client = Client::new(db_url, api_key);
 
-        // Try to get the inner index if the task succeeded
+        // Try to get the inner indices if the task succeeded
         let index_programs = match search_client.get_index("_programs").await {
             Ok(index) => index,
             Err(_) => {
@@ -64,6 +65,14 @@ impl EpgSyncManager {
                 task.try_make_index(&search_client).unwrap()
             }
         };
+
+        let s = Settings::new()
+            .with_searchable_attributes(&["name", "extended"])
+            .with_filterable_attributes(&["start_at", "genres"])
+            .with_sortable_attributes(&["start_at"])
+        ;
+        index_programs.set_settings(&s).await?;
+        index_services.set_settings(&s).await?;
 
         Ok(Self {
             m_conf,

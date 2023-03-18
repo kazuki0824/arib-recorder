@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Local};
 use log::info;
 use meilisearch_sdk::errors::Error;
+use meilisearch_sdk::settings::Settings;
 use mirakurun_client::models::Program;
 use tonic::transport::Server;
 use tonic::Code;
@@ -64,14 +65,14 @@ impl grpc_page::search_server::Search for MyGrpcSearchHandler {
         let client = get_temporary_db_accessor(&self.cx);
 
         let now = Local::now();
-        let (start, end) = (now, now + Duration::hours(6));
-        let query = format!(
-            "release_timestamp >= {} AND release_timestamp < {}",
-            start.timestamp(),
-            end.timestamp()
+        let (start, end) = (now - Duration::hours(1), now + Duration::hours(6));
+        let filter = format!(
+            "start_at >= {} AND start_at < {}",
+            start.timestamp() * 1000,
+            end.timestamp() * 1000
         );
 
-        let results = perform_search_query::<Program>(&client, "_programs", &query).await;
+        let results = perform_search_query::<Program>(&client, "_programs", "", &filter).await;
 
         match results {
             Ok(results) => {
@@ -95,7 +96,7 @@ impl grpc_page::search_server::Search for MyGrpcSearchHandler {
         let client = get_temporary_db_accessor(&self.cx);
 
         let query = request.into_inner();
-        let results = perform_search_query::<Program>(&client, "_programs", &query).await;
+        let results = perform_search_query::<Program>(&client, "_programs", &query, "").await;
 
         match results {
             Ok(results) => {

@@ -12,7 +12,7 @@ log = "~0.4.0"
 env_logger = "~0.10"
 
 mirakurun_client = "3.9.0-rc.2"
-meilisearch-sdk = "0.21.2"
+meilisearch-sdk = "0.22.0"
 
 #notify-rust = "4.5.10"
 

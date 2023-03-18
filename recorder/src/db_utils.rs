@@ -5,6 +5,7 @@ use meilisearch_sdk::indexes::Index;
 use meilisearch_sdk::search::SearchResults;
 use meilisearch_sdk::tasks::Task;
 use meilisearch_sdk::Client;
+use meilisearch_sdk::settings::Settings;
 use mirakurun_client::models::{Program, Service};
 use serde::Deserialize;
 
@@ -88,11 +89,14 @@ pub async fn perform_search_query<T: for<'a> Deserialize<'a> + 'static>(
     client: &Client,
     index_name: &str,
     query: &str,
+    filter: &str,
 ) -> Result<SearchResults<T>, Error> {
-    client
-        .index(index_name)
+    let index = client.index(index_name);
+    // Search
+    index
         .search()
-        .with_filter(query)
+        .with_query(query)
+        .with_filter(filter)
         .execute()
         .await
 }
