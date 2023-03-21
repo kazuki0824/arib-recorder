@@ -1,6 +1,6 @@
 use crate::recording_pool::recording_task::states::{FoundInFollowing, FoundInPresent};
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
-use log::{info, warn};
+use log::{debug, warn};
 use mirakurun_client::models::Program;
 use serde_json::{Map, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -43,8 +43,8 @@ impl TsDuckInner {
                     "0x12",
                     "--tid",
                     "0x4E",
-                    // "--section-number",
-                    // "0-1",
+                    "--section-number",
+                    "0-1",
                     "--flush",
                     "--no-pager",
                 ])
@@ -59,9 +59,10 @@ impl TsDuckInner {
 
             let info = info;
             let mut line: String = Default::default();
-            while let Ok(n) = reader.read_line(&mut line) {
+            while let Ok(_) = reader.read_line(&mut line) {
+                let nn = line.len();
                 let line = line.trim_end();
-                if n == 0 {
+                if nn == 0 {
                     break;
                 }
 
@@ -108,9 +109,11 @@ impl TsDuckInner {
                     }
                 };
 
-                info!("[id={}] Send: {:?}", info.id, to_be_written);
-                tx.send(to_be_written).unwrap();
+                debug!("[id={}] Send: {:?}", info.id, to_be_written);
+                tx.send_replace(to_be_written);
             }
+
+            warn!("tstables' stderr reached EOF.")
         });
 
         Ok(Self { stdin, child, rx })
@@ -127,13 +130,13 @@ impl TsDuckInner {
             let mut result: Option<EitDetected> = None;
 
             for item in filtered {
-                info!("[Id={}] Received EIT{:?}", info.id, item);
+                debug!("[Id={}] Received EIT{:?}", info.id, item);
 
                 let eid = item.get("event_id").unwrap().as_i64().unwrap();
                 // let id = 10000000000 * nid + 100000 * sid + eid;
 
                 if eid == info.id % 100000 {
-                    info!("hit");
+                    debug!("hit");
                     let start_at = item
                         .get("start_time")
                         .unwrap()
