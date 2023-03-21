@@ -12,7 +12,6 @@ use mirakurun_client::models::event::EventContent;
 use crate::context::Context;
 use crate::db_utils::{push_programs_ranges, push_services_ranges};
 
-mod event_relay;
 mod events_stream;
 mod periodic_tasks;
 

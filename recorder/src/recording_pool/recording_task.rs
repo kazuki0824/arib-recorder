@@ -4,14 +4,14 @@ mod states;
 
 use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
 use crate::recording_pool::recording_task::io_object::IoObject;
-use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A};
+use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A, Success};
 use crate::recording_pool::REC_POOL;
 use crate::RecordingTaskDescription;
 use chrono::{Duration, Local};
 use futures_util::TryStreamExt;
-use log::{debug, error, info};
+use log::{error, info};
 use mirakurun_client::apis::configuration::Configuration;
-use mirakurun_client::apis::programs_api::get_program_stream;
+use mirakurun_client::apis::services_api::get_service_stream;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::io;
@@ -19,11 +19,14 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
+use mirakurun_client::apis::programs_api::get_program_stream;
+use mirakurun_client::models::related_item::Type;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
 
 pub enum RecExitType {
     Aborted(u64),
+    Continue(i64, i64, i64, u64),
     Success(u64),
 }
 
@@ -78,16 +81,34 @@ impl RecTask {
             // Create a new task
             let rec = Some(IoObject::new(None).await?);
 
+            // Get Ts Stream
             let mut c = Configuration::new();
             c.base_path = m_url.to_string();
-            // Get Ts Stream
-            let src =
-                match get_program_stream(&c, info.program.id, None, None).await {
-                    Ok(value) => StreamReader::new(value.bytes_stream().map_err(
+            let src = if let Some((nid, sid, eid)) = info.id_override {
+                // Relayed
+                let id = nid * 10000000000 + sid * 100000 + eid;
+                match get_program_stream(&c, id, None, None).await {
+                    Ok(value) => Box::new(StreamReader::new(value.bytes_stream().map_err(
                         |e: mirakurun_client::Error| io::Error::new(std::io::ErrorKind::Other, e),
-                    )),
-                    Err(e) => return Err(io::Error::new(std::io::ErrorKind::Other, e)),
-                };
+                    ))) as Box<dyn AsyncBufRead + Unpin + Send>,
+                    Err(e) => {
+                        REC_POOL.remove(&id);
+                        return Err(io::Error::new(std::io::ErrorKind::Other, e))
+                    },
+                }
+            } else {
+                // Direct
+                let id = info.program.id / 100000;
+                match get_service_stream(&c, id, None, None).await  {
+                    Ok(value) => Box::new(StreamReader::new(value.bytes_stream().map_err(
+                        |e: mirakurun_client::Error| io::Error::new(std::io::ErrorKind::Other, e),
+                    ))) as Box<dyn AsyncBufRead + Unpin + Send>,
+                    Err(e) => {
+                        REC_POOL.remove(&id);
+                        return Err(io::Error::new(std::io::ErrorKind::Other, e))
+                    },
+                }
+            };
 
             //Eit
             let eit = TsDuckInner::new(info.program)?;
@@ -99,7 +120,7 @@ impl RecTask {
 
         Ok(Self {
             rec,
-            src: Box::new(src),
+            src,
             amt: 0,
             poll_count: 0,
             eit,
@@ -131,6 +152,27 @@ impl Future for RecTask {
                     "[id={}] Transition from {:?} to {:?}",
                     me.id, me.state, me.next_state
                 );
+                // Success
+                if let RecordingState::Success(_) = me.next_state {
+                    // If next id is found, continue.
+                    info!("[id={}] Reached Success.", me.id);
+                    let relay =  REC_POOL
+                        .get(me.id)
+                        .and_then(|v| v.val().program.related_items.clone())
+                        .and_then(|mut v| v.into_iter().find_map(|item| if let Some(Type::Relay) = item.r#type { Some(item) } else { None }))
+                        .clone();
+                    if let Some(next) =  relay {
+                        return Poll::Ready(Ok(RecExitType::Continue(
+                            next.network_id.unwrap(),
+                            next.service_id.unwrap(),
+                            next.event_id.unwrap(),
+                            *me.amt)
+                        ))
+                    } else {
+                        return Poll::Ready(Ok(RecExitType::Success(*me.amt)))
+                    }
+                }
+
                 // Determine file name
                 let new_path = match me.next_state {
                     RecordingState::Rec(_) if me.file_location.set_extension("m2ts") => {
@@ -223,7 +265,6 @@ impl Future for RecTask {
                     "[id={}] Recording has finished, and the buffer is successfully flushed.",
                     me.id
                 );
-                REC_POOL.remove(me.id);
 
                 return Poll::Ready(Ok(RecExitType::Success(*me.amt)));
             }
@@ -233,16 +274,15 @@ impl Future for RecTask {
                 .stdin
                 .write_all(buffer)
                 .expect("Writing to subprocess failed.");
-            // me.eit.stdin.flush().expect("Writing to subprocess failed.");
 
             // 書き込みの試行
             let i = ready!(me.rec.as_mut().as_pin_mut().unwrap().poll_write(cx, buffer))?;
-            debug!(
-                "[id={}] {} bytes has been writen to {}",
-                me.id,
-                i,
-                me.file_location.display()
-            );
+            // debug!(
+            //     "[id={}] {} bytes has been written to {}",
+            //     me.id,
+            //     i,
+            //     me.file_location.display()
+            // );
             if i == 0 {
                 return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
             }
@@ -251,7 +291,6 @@ impl Future for RecTask {
         }
 
         info!("[id={}] Aborted.", me.id);
-        REC_POOL.remove(me.id);
         Poll::Ready(Ok(RecExitType::Aborted(*me.amt)))
     }
 }

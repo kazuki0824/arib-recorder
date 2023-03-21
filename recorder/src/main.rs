@@ -30,6 +30,7 @@ pub enum RecordControlMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingTaskDescription {
     pub program: Program,
+    pub id_override: Option<(i64, i64, i64)>,
     pub save_dir_location: PathBuf,
 }
 

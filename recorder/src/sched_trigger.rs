@@ -162,6 +162,7 @@ pub(crate) async fn sched_trigger_startup(
 
                         let task = RecordingTaskDescription {
                             program: item.program.clone(),
+                            id_override: None,
                             save_dir_location: save_location,
                         };
 
