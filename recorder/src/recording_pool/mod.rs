@@ -102,7 +102,7 @@ async fn insert_task(
 
     let logger = async move {
         let mut result = task.await;
-        let info= REC_POOL.remove(&id);
+        let info = REC_POOL.remove(&id);
         match result {
             Ok(RecExitType::Aborted(_)) => warn!("[id={}] Aborted.", id),
             Ok(RecExitType::Success(_)) => info!("[id={}] Success.", id),
@@ -110,13 +110,15 @@ async fn insert_task(
                 // Event relay.
                 let mut info = info.unwrap().val().clone();
                 info.id_override = Some((nid, sid, eid));
-                result =  RecTask::new(cx.mirakurun_base_uri.clone(), info).await?.await
-            },
+                result = RecTask::new(cx.mirakurun_base_uri.clone(), info)
+                    .await?
+                    .await
+            }
             Err(ref e) => {
                 error!("[id={}] Unexpected exit.", id);
                 error!("{:#?}", e);
-            },
-            _ => unreachable!()
+            }
+            _ => unreachable!(),
         }
         result
     };

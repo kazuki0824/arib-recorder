@@ -4,14 +4,16 @@ mod states;
 
 use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
 use crate::recording_pool::recording_task::io_object::IoObject;
-use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A, Success};
+use crate::recording_pool::recording_task::states::{RecordingState, Success, WaitForPremiere, A};
 use crate::recording_pool::REC_POOL;
 use crate::RecordingTaskDescription;
 use chrono::{Duration, Local};
 use futures_util::TryStreamExt;
 use log::{error, info};
 use mirakurun_client::apis::configuration::Configuration;
+use mirakurun_client::apis::programs_api::get_program_stream;
 use mirakurun_client::apis::services_api::get_service_stream;
+use mirakurun_client::models::related_item::Type;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::io;
@@ -19,8 +21,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
-use mirakurun_client::apis::programs_api::get_program_stream;
-use mirakurun_client::models::related_item::Type;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
 
@@ -93,20 +93,20 @@ impl RecTask {
                     ))) as Box<dyn AsyncBufRead + Unpin + Send>,
                     Err(e) => {
                         REC_POOL.remove(&id);
-                        return Err(io::Error::new(std::io::ErrorKind::Other, e))
-                    },
+                        return Err(io::Error::new(std::io::ErrorKind::Other, e));
+                    }
                 }
             } else {
                 // Direct
                 let id = info.program.id / 100000;
-                match get_service_stream(&c, id, None, None).await  {
+                match get_service_stream(&c, id, None, None).await {
                     Ok(value) => Box::new(StreamReader::new(value.bytes_stream().map_err(
                         |e: mirakurun_client::Error| io::Error::new(std::io::ErrorKind::Other, e),
                     ))) as Box<dyn AsyncBufRead + Unpin + Send>,
                     Err(e) => {
                         REC_POOL.remove(&id);
-                        return Err(io::Error::new(std::io::ErrorKind::Other, e))
-                    },
+                        return Err(io::Error::new(std::io::ErrorKind::Other, e));
+                    }
                 }
             };
 
@@ -156,20 +156,28 @@ impl Future for RecTask {
                 if let RecordingState::Success(_) = me.next_state {
                     // If next id is found, continue.
                     info!("[id={}] Reached Success.", me.id);
-                    let relay =  REC_POOL
+                    let relay = REC_POOL
                         .get(me.id)
                         .and_then(|v| v.val().program.related_items.clone())
-                        .and_then(|mut v| v.into_iter().find_map(|item| if let Some(Type::Relay) = item.r#type { Some(item) } else { None }))
+                        .and_then(|mut v| {
+                            v.into_iter().find_map(|item| {
+                                if let Some(Type::Relay) = item.r#type {
+                                    Some(item)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
                         .clone();
-                    if let Some(next) =  relay {
+                    if let Some(next) = relay {
                         return Poll::Ready(Ok(RecExitType::Continue(
                             next.network_id.unwrap(),
                             next.service_id.unwrap(),
                             next.event_id.unwrap(),
-                            *me.amt)
-                        ))
+                            *me.amt,
+                        )));
                     } else {
-                        return Poll::Ready(Ok(RecExitType::Success(*me.amt)))
+                        return Poll::Ready(Ok(RecExitType::Success(*me.amt)));
                     }
                 }
 

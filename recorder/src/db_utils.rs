@@ -5,7 +5,6 @@ use meilisearch_sdk::indexes::Index;
 use meilisearch_sdk::search::SearchResults;
 use meilisearch_sdk::tasks::Task;
 use meilisearch_sdk::Client;
-use meilisearch_sdk::settings::Settings;
 use mirakurun_client::models::{Program, Service};
 use serde::Deserialize;
 

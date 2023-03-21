@@ -4,8 +4,8 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use log::{debug, error, info};
 use meilisearch_sdk::indexes::Index;
-use meilisearch_sdk::Client;
 use meilisearch_sdk::settings::Settings;
+use meilisearch_sdk::Client;
 use mirakurun_client::apis::configuration::Configuration;
 use mirakurun_client::models::event::EventContent;
 
@@ -68,8 +68,8 @@ impl EpgSyncManager {
         let s = Settings::new()
             .with_searchable_attributes(&["name", "extended"])
             .with_filterable_attributes(&["start_at", "genres"])
-            .with_sortable_attributes(&["start_at"])
-        ;
+            .with_sortable_attributes(&["start_at"]);
+        
         index_programs.set_settings(&s).await?;
         index_services.set_settings(&s).await?;
 

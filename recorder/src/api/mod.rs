@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Local};
 use log::info;
-use meilisearch_sdk::errors::Error;
-use meilisearch_sdk::settings::Settings;
 use mirakurun_client::models::Program;
 use tonic::transport::Server;
 use tonic::Code;
@@ -11,10 +9,7 @@ use ulid::Ulid;
 
 use crate::api::grpc_page::{schedule_server::*, search_server::*, *};
 use crate::context::Context;
-use crate::db_utils::{
-    get_all_programs, get_all_services, get_temporary_db_accessor, perform_search_query,
-    pull_program,
-};
+use crate::db_utils::{get_temporary_db_accessor, perform_search_query, pull_program};
 use crate::recording_planner::PlanUnit;
 use crate::recording_pool::REC_POOL;
 use crate::sched_trigger::Schedule;
