@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo update
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt update && \
-    apt install pkg-config libssl-dev -y
+    apt install pkg-config libssl-dev protobuf-compiler -y
     
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release
