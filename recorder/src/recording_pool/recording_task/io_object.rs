@@ -1,6 +1,6 @@
 use std::io::Error;
 use std::path::Path;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::task::{Context, Poll};
 
 use log::{info, warn};
@@ -97,9 +97,9 @@ impl AsyncWrite for IoObject {
             Self::WithFilter(Child {
                 stdin: Some(ref mut stdin),
                 ..
-            }) => Pin::new(stdin).poll_write(cx, buf),
-            Self::Raw(ref mut raw_out) => Pin::new(raw_out).poll_write(cx, buf),
-            Self::Null(sink) => Pin::new(sink).poll_write(cx, buf),
+            }) => pin!(stdin).poll_write(cx, buf),
+            Self::Raw(ref mut raw_out) => pin!(raw_out).poll_write(cx, buf),
+            Self::Null(sink) => pin!(sink).poll_write(cx, buf),
             _ => panic!("This process has no stdin."),
         }
     }
@@ -109,9 +109,9 @@ impl AsyncWrite for IoObject {
             Self::WithFilter(Child {
                 stdin: Some(ref mut stdin),
                 ..
-            }) => Pin::new(stdin).poll_flush(cx),
-            Self::Raw(ref mut raw_out) => Pin::new(raw_out).poll_flush(cx),
-            Self::Null(sink) => Pin::new(sink).poll_flush(cx),
+            }) => pin!(stdin).poll_flush(cx),
+            Self::Raw(ref mut raw_out) => pin!(raw_out).poll_flush(cx),
+            Self::Null(sink) => pin!(sink).poll_flush(cx),
             _ => panic!("This process has no stdin."),
         }
     }
@@ -121,9 +121,9 @@ impl AsyncWrite for IoObject {
             Self::WithFilter(Child {
                 stdin: Some(ref mut stdin),
                 ..
-            }) => Pin::new(stdin).poll_shutdown(cx),
-            Self::Raw(ref mut raw_out) => Pin::new(raw_out).poll_shutdown(cx),
-            Self::Null(sink) => Pin::new(sink).poll_shutdown(cx),
+            }) => pin!(stdin).poll_shutdown(cx),
+            Self::Raw(ref mut raw_out) => pin!(raw_out).poll_shutdown(cx),
+            Self::Null(sink) => pin!(sink).poll_shutdown(cx),
             _ => panic!("This process has no stdin."),
         }
     }
