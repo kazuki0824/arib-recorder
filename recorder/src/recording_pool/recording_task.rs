@@ -4,7 +4,7 @@ mod states;
 
 use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
 use crate::recording_pool::recording_task::io_object::IoObject;
-use crate::recording_pool::recording_task::states::{RecordingState, Success, WaitForPremiere, A};
+use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A};
 use crate::recording_pool::REC_POOL;
 use crate::RecordingTaskDescription;
 use chrono::{Duration, Local};
@@ -19,7 +19,7 @@ use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::path::PathBuf;
-use std::pin::Pin;
+use std::pin::{pin, Pin};
 use std::task::{ready, Context, Poll};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
@@ -28,6 +28,7 @@ pub enum RecExitType {
     Aborted(u64),
     Continue(i64, i64, i64, u64),
     Success(u64),
+    EndOfStream(u64),
 }
 
 pin_project! {
@@ -143,46 +144,44 @@ impl Future for RecTask {
         let mut me = self.project();
         *me.poll_count += 1;
 
-        while let Some(item) = REC_POOL.get(me.id).map(|c| c.val().clone()) {
-            //TODO: If A, read Mirakurun
-
+        if let Some(item) = REC_POOL.get(me.id).map(|c| c.val().clone()) {
             // State transition
             if me.state != me.next_state {
                 info!(
                     "[id={}] Transition from {:?} to {:?}",
                     me.id, me.state, me.next_state
                 );
-                // Success
-                if let RecordingState::Success(_) = me.next_state {
-                    // If next id is found, continue.
-                    info!("[id={}] Reached Success.", me.id);
-                    let relay = REC_POOL
-                        .get(me.id)
-                        .and_then(|v| v.val().program.related_items.clone())
-                        .and_then(|mut v| {
-                            v.into_iter().find_map(|item| {
-                                if let Some(Type::Relay) = item.r#type {
-                                    Some(item)
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .clone();
-                    if let Some(next) = relay {
-                        return Poll::Ready(Ok(RecExitType::Continue(
-                            next.network_id.unwrap(),
-                            next.service_id.unwrap(),
-                            next.event_id.unwrap(),
-                            *me.amt,
-                        )));
-                    } else {
-                        return Poll::Ready(Ok(RecExitType::Success(*me.amt)));
-                    }
-                }
 
                 // Determine file name
                 let new_path = match me.next_state {
+                    RecordingState::Success(_) => {
+                        // If next id is found, continue.
+                        info!("[id={}] Reached Success.", me.id);
+                        let relay = REC_POOL
+                            .get(me.id)
+                            .and_then(|v| v.val().program.related_items.clone())
+                            .and_then(|v| {
+                                v.into_iter().find_map(|item| {
+                                    if matches!(item.r#type, Some(Type::Relay)) {
+                                        Some(item)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .clone();
+                        // 正常離脱（リレー/終了）
+                        return if let Some(next) = relay {
+                            Poll::Ready(Ok(RecExitType::Continue(
+                                next.network_id.unwrap(),
+                                next.service_id.unwrap(),
+                                next.event_id.unwrap(),
+                                *me.amt,
+                            )))
+                        } else {
+                            Poll::Ready(Ok(RecExitType::Success(*me.amt)))
+                        };
+                    }
                     RecordingState::Rec(_) if me.file_location.set_extension("m2ts") => {
                         Some(me.file_location.as_path())
                     }
@@ -193,6 +192,10 @@ impl Future for RecTask {
                     }
                     _ => None,
                 };
+                info!(
+                    "[id={}] A new writer will be used from next polling...",
+                    me.id
+                );
                 *me.state = *me.next_state;
 
                 // Kill the current IoObject and create a new one
@@ -233,11 +236,49 @@ impl Future for RecTask {
                     });
                 });
 
+                return Poll::Pending;
+            }
+
+            //ピン留め
+            let rec = me.rec.as_pin_mut();
+
+            // 読み取りの試行
+            let buffer = ready!(Pin::new(&mut me.src).poll_fill_buf(cx))?;
+            if buffer.is_empty() {
+                // 読み取り結果がEOFの場合、ライターがあればフラッシュして終了
+                if let Some(rec) = rec {
+                    ready!(rec.poll_flush(cx))?;
+                }
                 info!(
-                    "[id={}] A new writer will be used from next polling...",
+                    "[id={}] Recording has finished, and the buffer is successfully flushed.",
                     me.id
                 );
-                return Poll::Pending;
+                return Poll::Ready(Ok(RecExitType::EndOfStream(*me.amt)));
+            }
+
+            // tstablesへ書き込み
+            me.eit
+                .stdin
+                .write_all(buffer)
+                .expect("Writing to subprocess failed.");
+
+            // 書き込みの試行
+            if let Some(rec) = rec {
+                let i = ready!(rec.poll_write(cx, buffer))?;
+                // log::debug!(
+                //     "[id={}] {} bytes has been written to {}",
+                //     me.id,
+                //     i,
+                //     me.file_location.display()
+                // );
+                if i == 0 {
+                    return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+                }
+                *me.amt += i as u64;
+                pin!(&mut me.src).consume(i);
+            } else {
+                let i = buffer.len();
+                pin!(&mut me.src).consume(i);
             }
 
             // Evaluate states and control IoObject
@@ -251,7 +292,7 @@ impl Future for RecTask {
                             error!(
                                 "No EIT received for 30 secs. Check the child process and signal"
                             );
-                            break;
+                            *me.state
                         } else {
                             me.state.on_wait_for_premiere(WaitForPremiere {
                                 start_at: item.program.start_at.into(),
@@ -264,41 +305,11 @@ impl Future for RecTask {
                 info!("[id={}] State will be updated in the next loop", me.id);
             }
 
-            // 読み取りの試行
-            let buffer = ready!(Pin::new(&mut me.src).poll_fill_buf(cx))?;
-            if buffer.is_empty() {
-                ready!(me.rec.as_pin_mut().unwrap().poll_flush(cx))?;
-
-                info!(
-                    "[id={}] Recording has finished, and the buffer is successfully flushed.",
-                    me.id
-                );
-
-                return Poll::Ready(Ok(RecExitType::Success(*me.amt)));
-            }
-
-            // tstablesへ書き込み
-            me.eit
-                .stdin
-                .write_all(buffer)
-                .expect("Writing to subprocess failed.");
-
-            // 書き込みの試行
-            let i = ready!(me.rec.as_mut().as_pin_mut().unwrap().poll_write(cx, buffer))?;
-            // debug!(
-            //     "[id={}] {} bytes has been written to {}",
-            //     me.id,
-            //     i,
-            //     me.file_location.display()
-            // );
-            if i == 0 {
-                return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
-            }
-            *me.amt += i as u64;
-            Pin::new(&mut *me.src).consume(i);
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        } else {
+            info!("[id={}] Aborted.", me.id);
+            Poll::Ready(Ok(RecExitType::Aborted(*me.amt)))
         }
-
-        info!("[id={}] Aborted.", me.id);
-        Poll::Ready(Ok(RecExitType::Aborted(*me.amt)))
     }
 }
