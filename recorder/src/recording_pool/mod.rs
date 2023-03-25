@@ -46,6 +46,7 @@ pub(crate) async fn recording_pool_startup(
                         Ok(h) => h,
                         Err(e) => {
                             error!("{}", e);
+                            REC_POOL.remove(&info.program.id);
                             continue;
                         }
                     };
@@ -76,6 +77,7 @@ pub(crate) async fn recording_pool_startup(
                             Ok(h) => h,
                             Err(e) => {
                                 error!("{}", e);
+                                REC_POOL.remove(&info.program.id);
                                 continue;
                             }
                         }

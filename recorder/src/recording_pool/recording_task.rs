@@ -93,7 +93,6 @@ impl RecTask {
                         |e: mirakurun_client::Error| io::Error::new(std::io::ErrorKind::Other, e),
                     ))) as Box<dyn AsyncBufRead + Unpin + Send>,
                     Err(e) => {
-                        REC_POOL.remove(&id);
                         return Err(io::Error::new(std::io::ErrorKind::Other, e));
                     }
                 }
@@ -105,7 +104,6 @@ impl RecTask {
                         |e: mirakurun_client::Error| io::Error::new(std::io::ErrorKind::Other, e),
                     ))) as Box<dyn AsyncBufRead + Unpin + Send>,
                     Err(e) => {
-                        REC_POOL.remove(&id);
                         return Err(io::Error::new(std::io::ErrorKind::Other, e));
                     }
                 }
