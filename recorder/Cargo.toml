@@ -23,7 +23,6 @@ prost-types = "0.11"
 
 futures-util = { version = "^0.3", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal"], default-features = false }
-tokio-process-stream = "0.3.0"
 tokio-stream = { version = "~0.1", features = ["io-util"], default-features = false }
 tokio-util = { version = "~0.7", features = ["io"], default-features = false }
 lockfree = "0.5.1"

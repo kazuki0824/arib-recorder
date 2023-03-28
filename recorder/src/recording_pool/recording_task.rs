@@ -1,12 +1,10 @@
-mod eit_subprocess;
-mod io_object;
-mod states;
+use std::future::Future;
+use std::io;
+use std::io::Write;
+use std::path::PathBuf;
+use std::pin::{pin, Pin};
+use std::task::{Context, Poll, ready};
 
-use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
-use crate::recording_pool::recording_task::io_object::IoObject;
-use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A};
-use crate::recording_pool::REC_POOL;
-use crate::RecordingTaskDescription;
 use chrono::{Duration, Local};
 use futures_util::TryStreamExt;
 use log::{error, info};
@@ -15,14 +13,18 @@ use mirakurun_client::apis::programs_api::get_program_stream;
 use mirakurun_client::apis::services_api::get_service_stream;
 use mirakurun_client::models::related_item::Type;
 use pin_project_lite::pin_project;
-use std::future::Future;
-use std::io;
-use std::io::Write;
-use std::path::PathBuf;
-use std::pin::{pin, Pin};
-use std::task::{ready, Context, Poll};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
+
+use crate::recording_pool::REC_POOL;
+use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
+use crate::recording_pool::recording_task::io_object::IoObject;
+use crate::recording_pool::recording_task::states::{A, RecordingState, WaitForPremiere};
+use crate::RecordingTaskDescription;
+
+mod eit_subprocess;
+mod io_object;
+mod states;
 
 pub enum RecExitType {
     Aborted(u64),
@@ -152,6 +154,9 @@ impl Future for RecTask {
 
                 // Determine file name
                 let new_path = match me.next_state {
+                    RecordingState::Error => {
+                        todo!()
+                    }
                     RecordingState::Success(_) => {
                         // If next id is found, continue.
                         info!("[id={}] Reached Success.", me.id);
@@ -259,6 +264,10 @@ impl Future for RecTask {
                 .stdin
                 .write_all(buffer)
                 .expect("Writing to subprocess failed.");
+            me.eit
+                .stdin
+                .flush()
+                .expect("Writing to subprocess failed.");
 
             // 書き込みの試行
             if let Some(rec) = rec {
@@ -280,7 +289,7 @@ impl Future for RecTask {
             }
 
             // Evaluate states and control IoObject
-            if me.eit.rx.has_changed().unwrap() {
+            if let Ok(true) = me.eit.rx.has_changed() {
                 let after = match *me.eit.rx.borrow_and_update() {
                     EitDetected::P(ref inner) => me.state.on_found_in_present(inner.clone()),
                     EitDetected::F(ref inner) => me.state.on_found_in_following(inner.clone()),
@@ -301,6 +310,7 @@ impl Future for RecTask {
                 *me.next_state = after;
 
                 info!("[id={}] State will be updated in the next loop", me.id);
+                info!("[id={}] Next is {:?}", me.id, after)
             }
 
             cx.waker().wake_by_ref();

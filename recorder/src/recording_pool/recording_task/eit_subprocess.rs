@@ -1,17 +1,22 @@
-use crate::recording_pool::recording_task::states::{FoundInFollowing, FoundInPresent};
+use std::io::{BufWriter, Write};
+use std::process::{Command, Stdio};
+
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
-use log::{debug, warn};
+use log::{error, info, warn};
 use mirakurun_client::models::Program;
 use serde_json::{Map, Value};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
 use tokio::sync::watch;
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
+
+use crate::recording_pool::recording_task::states::{FoundInFollowing, FoundInPresent};
 
 pub(super) struct TsDuckInner {
     child: std::process::Child,
     pub(super) rx: watch::Receiver<EitDetected>,
-    pub(super) stdin: std::process::ChildStdin,
+    pub(super) stdin: BufWriter<std::process::ChildStdin>,
 }
+
 impl Drop for TsDuckInner {
     fn drop(&mut self) {
         self.child.kill();
@@ -32,11 +37,14 @@ impl TsDuckInner {
         });
 
         let mut child = {
-            Command::new(format!("tstables"))
+            Command::new(format!("stdbuf"))
                 .stdin(Stdio::piped())
+                .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .args([
-                    "--fill-eit",
+                    "-eL",
+                    "tstables",
+                    "--flush",
                     "--japan",
                     "--log-json-line",
                     "--pid",
@@ -45,31 +53,28 @@ impl TsDuckInner {
                     "0x4E",
                     "--section-number",
                     "0-1",
-                    "--flush",
                     "--no-pager",
                 ])
                 .spawn()?
         };
 
-        let stdin = child.stdin.take().unwrap();
+        let stdin = BufWriter::new(child.stdin.take().unwrap());
         let stderr = child.stderr.take().unwrap();
 
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
+        tokio::spawn(async move {
+            let stderr = tokio::process::ChildStderr::from_std(stderr).unwrap();
+            let mut reader = FramedRead::new(stderr, LinesCodec::new());
 
             let info = info;
-            let mut line: String = Default::default();
-            while let Ok(_) = reader.read_line(&mut line) {
-                let nn = line.len();
-                let line = line.trim_end();
-                if nn == 0 {
-                    break;
-                }
+
+            while let Some(line) = reader.next().await {
+                let line = line?;
+                info!("{}", line);
 
                 let to_be_written = {
                     // scan each lines until found
                     let mut result = None;
-                    for line in line.split('\n') {
+                    for line in line.trim_end().split('\n') {
                         match serde_json::from_str::<Value>(&line) {
                             Ok(Value::Object(ref body)) => {
                                 let (nid, sid) = (
@@ -109,11 +114,12 @@ impl TsDuckInner {
                     }
                 };
 
-                debug!("[id={}] Send: {:?}", info.id, to_be_written);
+                info!("[id={}] Send: {:?}", info.id, to_be_written);
                 tx.send_replace(to_be_written);
             }
 
-            warn!("tstables' stderr reached EOF.")
+            warn!("tstables' stderr reached EOF.");
+            Ok::<(), LinesCodecError>(())
         });
 
         Ok(Self { stdin, child, rx })
@@ -130,13 +136,13 @@ impl TsDuckInner {
             let mut result: Option<EitDetected> = None;
 
             for item in filtered {
-                debug!("[Id={}] Received EIT{:?}", info.id, item);
+                info!("[Id={}] Received EIT{:?}", info.id, item);
 
                 let eid = item.get("event_id").unwrap().as_i64().unwrap();
                 // let id = 10000000000 * nid + 100000 * sid + eid;
 
                 if eid == info.id % 100000 {
-                    debug!("hit");
+                    info!("hit");
                     let start_at = item
                         .get("start_time")
                         .unwrap()
@@ -173,9 +179,12 @@ impl TsDuckInner {
                         if Local::now() < start_at {
                             // EIT[following]
                             result = Some(EitDetected::F(FoundInFollowing { start_at, duration }));
-                        } else {
+                        } else if duration.is_some() && Local::now() < start_at + duration.unwrap()
+                        {
                             // EIT[present]
                             result = Some(EitDetected::P(FoundInPresent { start_at, duration }));
+                        } else {
+                            error!("[BUG] hit but ended. TOT calibration needed.")
                         }
                         break;
                     } else {
