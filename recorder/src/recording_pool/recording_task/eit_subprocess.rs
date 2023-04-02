@@ -2,9 +2,10 @@ use std::io::{BufWriter, Write};
 use std::process::{Command, Stdio};
 
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
+use jsonpath_rust::JsonPathQuery;
 use log::{error, info, warn};
 use mirakurun_client::models::Program;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use tokio::sync::watch;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
@@ -23,7 +24,7 @@ impl Drop for TsDuckInner {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EitDetected {
     P(FoundInPresent),
     F(FoundInFollowing),
@@ -37,13 +38,11 @@ impl TsDuckInner {
         });
 
         let mut child = {
-            Command::new(format!("stdbuf"))
+            Command::new("tstables")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .args([
-                    "-eL",
-                    "tstables",
                     "--flush",
                     "--japan",
                     "--log-json-line",
@@ -61,6 +60,9 @@ impl TsDuckInner {
         let stdin = BufWriter::new(child.stdin.take().unwrap());
         let stderr = child.stderr.take().unwrap();
 
+        // TODO: 5sec trigger for A->B1
+
+        // tstables reader
         tokio::spawn(async move {
             let stderr = tokio::process::ChildStderr::from_std(stderr).unwrap();
             let mut reader = FramedRead::new(stderr, LinesCodec::new());
@@ -72,16 +74,12 @@ impl TsDuckInner {
                 info!("{}", line);
 
                 let to_be_written = {
-                    // scan each lines until found
+                    // scan each lines until found.
                     let mut result = None;
                     for line in line.trim_end().split('\n') {
-                        match serde_json::from_str::<Value>(&line) {
-                            Ok(Value::Object(ref body)) => {
-                                let (nid, sid) = (
-                                    body["original_network_id"].as_i64().unwrap(),
-                                    body["service_id"].as_i64().unwrap(),
-                                );
-                                if let Some(eit) = Self::extract_eit(body, &info) {
+                        match serde_json::from_str::<Value>(line) {
+                            Ok(body) => {
+                                if let Some(eit) = Self::extract_eit2(&body, &info).unwrap() {
                                     result = Some(eit);
                                     break;
                                 }
@@ -94,28 +92,28 @@ impl TsDuckInner {
                                     .write(true)
                                     .open(format!("./logs/{}.log", info.name.as_ref().unwrap()))
                                     .unwrap();
-                                writeln!(w, "{:?}", e);
-                                writeln!(w, "{}", line);
+                                let _ = writeln!(w, "{:?}", e);
+                                let _ = writeln!(w, "{}", line);
                                 continue;
                             }
-                            _ => todo!(),
                         };
                     }
 
                     // Assume result
                     match (&*tx.borrow(), &result) {
-                        (EitDetected::NotFound { since }, None) => EitDetected::NotFound {
-                            since: since.clone(),
+                        (
+                            EitDetected::NotFound { since },
+                            Some(EitDetected::NotFound { .. }) | None,
+                        ) => EitDetected::NotFound {
+                            since: *since,
                         },
-                        (_, None) => EitDetected::NotFound {
-                            since: Local::now(),
-                        },
+                        (_, None) => continue,
                         _ => result.unwrap(),
                     }
                 };
 
                 info!("[id={}] Send: {:?}", info.id, to_be_written);
-                tx.send_replace(to_be_written);
+                tx.send(to_be_written).map_err(|e| error!("{:?}", e));
             }
 
             warn!("tstables' stderr reached EOF.");
@@ -125,76 +123,93 @@ impl TsDuckInner {
         Ok(Self { stdin, child, rx })
     }
 
-    fn extract_eit(body: &Map<String, Value>, info: &Program) -> Option<EitDetected> {
-        if let Some(eits) = body["#nodes"].as_array() {
-            let filtered = eits.iter().filter_map(|eit| eit.as_object()).filter(|eit| {
-                eit.contains_key("event_id")
-                    && eit.contains_key("start_time")
-                    && eit.contains_key("duration")
-            });
+    fn extract_eit2(body: &Value, info: &Program) -> Result<Option<EitDetected>, String> {
+        // 抽出
+        // None: This line has different nid or sid so ignored.
+        // Some(EitDetected::NotFound): Nid and sid matched but the event is not found.
+        if let (
+            Value::Array(nid),
+            Value::Array(sid),
+            Value::Array(ty),
+            Value::Array(eids),
+            Value::Array(starts),
+            Value::Array(durations),
+        ) = (
+            body.clone().path("$.original_network_id")?,
+            body.clone().path("$.service_id")?,
+            body.clone().path("$.type")?,
+            body.clone().path("$.#nodes.*.event_id")?,
+            body.clone().path("$.#nodes.*.start_time")?,
+            body.clone().path("$.#nodes.*.duration")?,
+        ) {
+            // 照合
+            match (nid.first(), sid.first(), ty.first()) {
+                (Some(nid), Some(sid), Some(ty))
+                    if nid == info.network_id && sid == info.service_id && ty == "pf" =>
+                {
+                    let mut i = 0;
 
-            let mut result: Option<EitDetected> = None;
+                    let mut iterator = eids.iter().zip(starts.iter());
+                    while let Some((Value::Number(eid), Value::String(start))) = iterator.next() {
+                        if info.event_id as i64 == eid.as_i64().unwrap() {
+                            info!("hit");
+                            let parsed_start =
+                                NaiveDateTime::parse_from_str(start, "%Y-%m-%d %H:%M:%S")
+                                    .ok()
+                                    .and_then(|t| Local.from_local_datetime(&t).single());
+                            let duration = durations.get(i).map(|s| {
+                                let mut reverse_split = s.as_str().unwrap().rsplit(':');
+                                let sec = reverse_split
+                                    .next()
+                                    .and_then(|s| s.parse::<i64>().ok())
+                                    .unwrap_or(0);
+                                let min = reverse_split
+                                    .next()
+                                    .and_then(|s| s.parse::<i64>().ok())
+                                    .unwrap_or(0);
+                                let hour = reverse_split
+                                    .next()
+                                    .and_then(|s| s.parse::<i64>().ok())
+                                    .unwrap_or(0);
 
-            for item in filtered {
-                info!("[Id={}] Received EIT{:?}", info.id, item);
+                                let sec = Duration::seconds(sec);
+                                let min = Duration::minutes(min);
+                                let hour = Duration::hours(hour);
 
-                let eid = item.get("event_id").unwrap().as_i64().unwrap();
-                // let id = 10000000000 * nid + 100000 * sid + eid;
+                                sec + min + hour
+                            });
 
-                if eid == info.id % 100000 {
-                    info!("hit");
-                    let start_at = item
-                        .get("start_time")
-                        .unwrap()
-                        .as_str()
-                        .unwrap_or("not found");
-                    let duration = item.get("duration").and_then(|f| f.as_str());
-
-                    let parsed_start = NaiveDateTime::parse_from_str(start_at, "%Y-%m-%d %H:%M:%S")
-                        .ok()
-                        .and_then(|t| Local.from_local_datetime(&t).single());
-                    if let Some(start_at) = parsed_start {
-                        // send result
-                        let duration = duration.map(|s| {
-                            let mut reverse_split = s.rsplit(':');
-                            let sec = reverse_split
-                                .next()
-                                .and_then(|s| s.parse::<i64>().ok())
-                                .unwrap_or(0);
-                            let min = reverse_split
-                                .next()
-                                .and_then(|s| s.parse::<i64>().ok())
-                                .unwrap_or(0);
-                            let hour = reverse_split
-                                .next()
-                                .and_then(|s| s.parse::<i64>().ok())
-                                .unwrap_or(0);
-
-                            let sec = Duration::seconds(sec);
-                            let min = Duration::minutes(min);
-                            let hour = Duration::hours(hour);
-
-                            sec + min + hour
-                        });
-                        if Local::now() < start_at {
-                            // EIT[following]
-                            result = Some(EitDetected::F(FoundInFollowing { start_at, duration }));
-                        } else if duration.is_some() && Local::now() < start_at + duration.unwrap()
-                        {
-                            // EIT[present]
-                            result = Some(EitDetected::P(FoundInPresent { start_at, duration }));
-                        } else {
-                            error!("[BUG] hit but ended. TOT calibration needed.")
+                            let start_at = parsed_start.unwrap();
+                            if Local::now() < start_at {
+                                // EIT[following]
+                                return Ok(Some(EitDetected::F(FoundInFollowing {
+                                    start_at,
+                                    duration,
+                                })));
+                            } else if duration.is_some()
+                                && Local::now() < start_at + duration.unwrap()
+                            {
+                                // EIT[present]
+                                return Ok(Some(EitDetected::P(FoundInPresent {
+                                    start_at,
+                                    duration,
+                                })));
+                            } else {
+                                error!("[BUG] hit but ended. TOT calibration needed.");
+                                continue;
+                            }
                         }
-                        break;
-                    } else {
-                        continue;
+
+                        i += 1;
                     }
+                    Ok(Some(EitDetected::NotFound {
+                        since: Local::now(),
+                    }))
                 }
+                _ => Ok(None),
             }
-            result
         } else {
-            None
+            unreachable!("")
         }
     }
 }
