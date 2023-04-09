@@ -262,10 +262,10 @@ impl Future for RecTask {
                 .stdin
                 .write_all(buffer)
                 .expect("Writing to subprocess failed.");
-            // me.eit
-            //     .stdin
-            //     .flush()
-            //     .expect("Writing to subprocess failed.");
+            me.eit
+                .stdin
+                .flush()
+                .expect("Writing to subprocess failed.");
 
             // 書き込みの試行
             if let Some(rec) = rec {
@@ -285,6 +285,9 @@ impl Future for RecTask {
                 let i = buffer.len();
                 pin!(&mut me.src).consume(i);
             }
+
+            let end = me.start.elapsed();
+            // println!("Time elapsed: {:.3} s. Speed: {:8.4}kb/s", end.as_secs_f64(), *me.amt as f64 / end.as_secs_f64() / 1000.0);
 
             // Evaluate states and control IoObject
             let operator = |recv: EitDetected, state: RecordingState| {
@@ -313,7 +316,6 @@ impl Future for RecTask {
 
             // Check channel
             // First, exit immediately if pending
-            let t = std::time::Instant::now();
             if let Some(recv) = ready!(me.eit.rx.poll_recv(cx)) {
                 let mut after = operator(recv, *me.state);
                 while let Poll::Ready(recv) = me.eit.rx.poll_recv(cx) {
@@ -324,8 +326,7 @@ impl Future for RecTask {
                 info!("[id={}] State will be updated in the next loop", me.id);
                 info!("[id={}] Next is {:?}", me.id, after);
             }
-            let end = t.elapsed();
-            // println!("Poll time: {} usec", end.as_micros());
+
             Poll::Pending
         } else {
             info!("[id={}] Aborted.", me.id);

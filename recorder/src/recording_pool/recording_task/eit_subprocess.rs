@@ -13,6 +13,7 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use crate::recording_pool::recording_task::states::{FoundInFollowing, FoundInPresent};
+use crate::RecordingTaskDescription;
 
 pub(super) struct TsDuckInner {
     child: process::Child,
@@ -78,52 +79,26 @@ impl TsDuckInner {
                 let line = line?;
                 info!("{}", line);
 
-                last = {
-                    // scan each lines until found.
-                    let mut result = None;
-                    for line in line.trim_end().split('\n') {
-                        match serde_json::from_str::<Value>(line) {
-                            Ok(body) => {
-                                if let Some(eit) = Self::extract_eit2(&body, &info).unwrap() {
-                                    result = Some(eit);
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Error while parsing tstables' output: {:?}", e);
-                                let mut w = std::fs::OpenOptions::new()
-                                    .create(true)
-                                    .append(true)
-                                    .write(true)
-                                    .open(format!("./logs/{}.log", info.name.as_ref().unwrap()))
-                                    .unwrap();
-                                let _ = writeln!(w, "{:?}", e);
-                                let _ = writeln!(w, "{}", line);
-                                continue;
-                            }
-                        };
-                    }
-                    info!("{:?}", result);
-                    // Assume result
-                    match (&last, &result) {
-                        (
-                            EitDetected::NotFound { since },
-                            Some(EitDetected::NotFound { .. }) | None,
-                        ) => EitDetected::NotFound {
-                            since: *since,
-                        },
-                        (_, None) => continue,
-                        _ => result.unwrap(),
-                    }
-                };
+                let info = info.clone();
+                let cloned_tx = tx.clone();
 
-                let (cloned_last, cloned_tx) = (last.clone(), tx.clone());
+                last = tokio::task::spawn_blocking(move || {
+                    match Self::derive_from_last_line(&last, &line, &info) {
+                        None => last,
+                        Some(send_value) => {
+                            info!("[id={}] Send: {:?}", info.id, send_value);
+                            info!("[id={}] Sent! {} usecs elapsed.", info.id, start.elapsed().as_micros());
+                            send_value
+                        }
+                    }
+                }).await.unwrap();
+
+                let cloned_last = last.clone();
+
                 tokio::spawn(async move {
-                    info!("[id={}] Send: {:?}", info.id, cloned_last);
-                    cloned_tx.send(cloned_last).await.map_err(|e| error!("{:?}", e));
-                    info!("[id={}] Sent! {}usecs elapsed.", info.id, start.elapsed().as_micros());
+                    /* Send result across thread */
+                    cloned_tx.send(cloned_last).await.map_err(|e| error!("{:?}", e))
                 });
-
             }
 
             warn!("tstables' stderr reached EOF.");
@@ -131,6 +106,48 @@ impl TsDuckInner {
         });
 
         Ok(Self { stdin, child, rx })
+    }
+
+    fn derive_from_last_line(last: &EitDetected, line: &str, p: &Program) -> Option<EitDetected> {
+        // scan each lines until found.
+        let mut result = None;
+        for line in line.trim_end().split('\n') {
+            match serde_json::from_str::<Value>(line) {
+                Ok(body) => {
+                    if let Some(eit) = Self::extract_eit2(&body, p).unwrap() {
+                        result = Some(eit);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!("Error while parsing tstables' output: {:?}", e);
+                    // log
+                    let mut w = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .write(true)
+                        .open(format!("./logs/{}.log", p.name.as_ref().unwrap()))
+                        .unwrap();
+                    let _ = writeln!(w, "{:?}", e);
+                    let _ = writeln!(w, "{}", line);
+                    return None;
+                }
+            };
+        }
+        info!("{:?}", result);
+        // Assume result
+        let result_merged = match (&last, &result) {
+            (
+                EitDetected::NotFound { since },
+                Some(EitDetected::NotFound { .. }) | None,
+            ) => EitDetected::NotFound {
+                since: *since,
+            },
+            (_, None) => return None,
+            _ => result.unwrap(),
+        };
+
+        Some(result_merged)
     }
 
     fn extract_eit2(body: &Value, info: &Program) -> Result<Option<EitDetected>, String> {
