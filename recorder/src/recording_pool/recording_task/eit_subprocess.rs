@@ -1,21 +1,23 @@
-use std::io::{BufWriter, Write};
-use std::process::{Command, Stdio};
+use std::io::{BufRead, Write};
+use std::process;
+use std::process::Stdio;
 
 use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone};
 use jsonpath_rust::JsonPathQuery;
 use log::{error, info, warn};
 use mirakurun_client::models::Program;
 use serde_json::Value;
-use tokio::sync::watch;
+use std::io::BufWriter;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use crate::recording_pool::recording_task::states::{FoundInFollowing, FoundInPresent};
 
 pub(super) struct TsDuckInner {
-    child: std::process::Child,
-    pub(super) rx: watch::Receiver<EitDetected>,
-    pub(super) stdin: BufWriter<std::process::ChildStdin>,
+    child: process::Child,
+    pub(super) rx: mpsc::Receiver<EitDetected>,
+    pub(super) stdin: BufWriter<process::ChildStdin>,
 }
 
 impl Drop for TsDuckInner {
@@ -33,17 +35,15 @@ pub enum EitDetected {
 
 impl TsDuckInner {
     pub(crate) fn new(info: Program) -> std::io::Result<Self> {
-        let (tx, rx) = watch::channel(EitDetected::NotFound {
-            since: Local::now(),
-        });
+        let (tx, rx) = mpsc::channel(100);
 
         let mut child = {
-            Command::new("tstables")
+            process::Command::new("tstables")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .args([
-                    "--flush",
+                    // "--flush",
                     "--japan",
                     "--log-json-line",
                     "--pid",
@@ -57,7 +57,7 @@ impl TsDuckInner {
                 .spawn()?
         };
 
-        let stdin = BufWriter::new(child.stdin.take().unwrap());
+        let stdin = BufWriter::with_capacity(5000000, child.stdin.take().unwrap());
         let stderr = child.stderr.take().unwrap();
 
         // TODO: 5sec trigger for A->B1
@@ -69,11 +69,16 @@ impl TsDuckInner {
 
             let info = info;
 
+            let mut last = EitDetected::NotFound {
+                since: Local::now(),
+            };
+
             while let Some(line) = reader.next().await {
+                let start = std::time::Instant::now();
                 let line = line?;
                 info!("{}", line);
 
-                let to_be_written = {
+                last = {
                     // scan each lines until found.
                     let mut result = None;
                     for line in line.trim_end().split('\n') {
@@ -98,9 +103,9 @@ impl TsDuckInner {
                             }
                         };
                     }
-
+                    info!("{:?}", result);
                     // Assume result
-                    match (&*tx.borrow(), &result) {
+                    match (&last, &result) {
                         (
                             EitDetected::NotFound { since },
                             Some(EitDetected::NotFound { .. }) | None,
@@ -112,8 +117,13 @@ impl TsDuckInner {
                     }
                 };
 
-                info!("[id={}] Send: {:?}", info.id, to_be_written);
-                tx.send(to_be_written).map_err(|e| error!("{:?}", e));
+                let (cloned_last, cloned_tx) = (last.clone(), tx.clone());
+                tokio::spawn(async move {
+                    info!("[id={}] Send: {:?}", info.id, cloned_last);
+                    cloned_tx.send(cloned_last).await.map_err(|e| error!("{:?}", e));
+                    info!("[id={}] Sent! {}usecs elapsed.", info.id, start.elapsed().as_micros());
+                });
+
             }
 
             warn!("tstables' stderr reached EOF.");
@@ -187,7 +197,7 @@ impl TsDuckInner {
                                     duration,
                                 })));
                             } else if duration.is_some()
-                                && Local::now() < start_at + duration.unwrap()
+                                && Local::now() < start_at + duration.unwrap() + Duration::seconds(30)
                             {
                                 // EIT[present]
                                 return Ok(Some(EitDetected::P(FoundInPresent {

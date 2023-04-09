@@ -118,16 +118,16 @@ pub(crate) async fn sched_trigger_startup(
                 (found, q_schedules.items.len())
             };
 
-            if remainder > 0 || found - remainder > 0 {
+            if remainder > 0 || found - remainder > 0 || REC_POOL.iter().count() > 0 {
                 info!(
-                    "{} schedule units remains. {} of unit(s) dropped. {} of unit(s) are ongoing.",
+                    "{} schedule units remains. {} of unit(s) dropped. {} of recording(s) are ongoing.",
                     remainder,
                     found - remainder,
                     REC_POOL.iter().count(),
                 )
             } else {
                 debug!(
-                    "{} schedule units remains. {} of unit(s) dropped. {} of unit(s) are ongoing.",
+                    "{} schedule units remains. {} of unit(s) dropped. {} of recording(s) are ongoing.",
                     remainder,
                     found - remainder,
                     REC_POOL.iter().count(),

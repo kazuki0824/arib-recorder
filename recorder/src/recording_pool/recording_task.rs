@@ -3,11 +3,11 @@ use std::io;
 use std::io::Write;
 use std::path::PathBuf;
 use std::pin::{pin, Pin};
-use std::task::{Context, Poll, ready};
+use std::task::{ready, Context, Poll};
 
 use chrono::{Duration, Local};
-use futures_util::TryStreamExt;
-use log::{error, info};
+use futures_util::{FutureExt, TryStreamExt};
+use log::{error, info, warn};
 use mirakurun_client::apis::configuration::Configuration;
 use mirakurun_client::apis::programs_api::get_program_stream;
 use mirakurun_client::apis::services_api::get_service_stream;
@@ -16,10 +16,10 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
 
-use crate::recording_pool::REC_POOL;
 use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
 use crate::recording_pool::recording_task::io_object::IoObject;
-use crate::recording_pool::recording_task::states::{A, RecordingState, WaitForPremiere};
+use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A};
+use crate::recording_pool::REC_POOL;
 use crate::RecordingTaskDescription;
 
 mod eit_subprocess;
@@ -39,7 +39,7 @@ pin_project! {
         rec: Option<IoObject>,
         src: Box<dyn AsyncBufRead + Unpin + Send>,
         amt: u64,
-        poll_count: u64,
+        start: std::time::Instant,
         eit: TsDuckInner,
         next_state: RecordingState,
         pub(crate) state: RecordingState,
@@ -123,7 +123,7 @@ impl RecTask {
             rec,
             src,
             amt: 0,
-            poll_count: 0,
+            start: std::time::Instant::now(),
             eit,
             next_state: RecordingState::A(A {
                 since: Local::now(),
@@ -142,7 +142,6 @@ impl Future for RecTask {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut me = self.project();
-        *me.poll_count += 1;
 
         if let Some(item) = REC_POOL.get(me.id).map(|c| c.val().clone()) {
             // State transition
@@ -171,8 +170,7 @@ impl Future for RecTask {
                                         None
                                     }
                                 })
-                            })
-                            .clone();
+                            });
                         // 正常離脱（リレー/終了）
                         return if let Some(next) = relay {
                             Poll::Ready(Ok(RecExitType::Continue(
@@ -264,10 +262,10 @@ impl Future for RecTask {
                 .stdin
                 .write_all(buffer)
                 .expect("Writing to subprocess failed.");
-            me.eit
-                .stdin
-                .flush()
-                .expect("Writing to subprocess failed.");
+            // me.eit
+            //     .stdin
+            //     .flush()
+            //     .expect("Writing to subprocess failed.");
 
             // 書き込みの試行
             if let Some(rec) = rec {
@@ -289,31 +287,45 @@ impl Future for RecTask {
             }
 
             // Evaluate states and control IoObject
-            if let Ok(true) = me.eit.rx.has_changed() {
-                let after = match *me.eit.rx.borrow_and_update() {
-                    EitDetected::P(ref inner) => me.state.on_found_in_present(inner.clone()),
-                    EitDetected::F(ref inner) => me.state.on_found_in_following(inner.clone()),
+            let operator = |recv: EitDetected, state: RecordingState| {
+                match recv {
+                    EitDetected::P(ref inner) => {
+                        state.on_found_in_present(inner.clone())
+                    }
+                    EitDetected::F(ref inner) => {
+                        state.on_found_in_following(inner.clone())
+                    }
                     EitDetected::NotFound { since } => {
                         if Local::now() - since > Duration::seconds(30) {
                             //停波中
-                            error!(
+                            warn!(
                                 "No EIT received for 30 secs. Check the child process and signal"
                             );
-                            *me.state
-                        } else {
-                            me.state.on_wait_for_premiere(WaitForPremiere {
-                                start_at: item.program.start_at.into(),
-                            })
                         }
+                        state.on_wait_for_premiere(WaitForPremiere {
+                            start_at: item.program.start_at.into(),
+                        })
                     }
-                };
+                }
+            };
+
+            cx.waker().wake_by_ref();
+
+            // Check channel
+            // First, exit immediately if pending
+            let t = std::time::Instant::now();
+            if let Some(recv) = ready!(me.eit.rx.poll_recv(cx)) {
+                let mut after = operator(recv, *me.state);
+                while let Poll::Ready(recv) = me.eit.rx.poll_recv(cx) {
+                    after = operator(recv.unwrap(), after);
+                }
                 *me.next_state = after;
 
                 info!("[id={}] State will be updated in the next loop", me.id);
-                info!("[id={}] Next is {:?}", me.id, after)
+                info!("[id={}] Next is {:?}", me.id, after);
             }
-
-            cx.waker().wake_by_ref();
+            let end = t.elapsed();
+            // println!("Poll time: {} usec", end.as_micros());
             Poll::Pending
         } else {
             info!("[id={}] Aborted.", me.id);
