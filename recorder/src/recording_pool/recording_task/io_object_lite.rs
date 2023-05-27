@@ -2,7 +2,7 @@ use std::io::Write;
 use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::pin::Pin;
-use std::process;
+use tokio::process;
 use std::process::Stdio;
 use std::task::{Context, Poll};
 
@@ -31,15 +31,15 @@ pub enum EitDetected {
 pub(super) struct IoObjectLite {
     child: process::Child,
     pub(super) rx: mpsc::Receiver<EitDetected>,
-    pub(super) stdin: tokio::process::ChildStdin
+    pub(super) stdin: process::ChildStdin
 }
 
 impl Drop for IoObjectLite {
     fn drop(&mut self) {
-        info!("Killing {}...", self.child.id());
+        info!("Killing {}...", self.child.id().unwrap());
 
         unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGINT);
+            libc::kill(self.child.id().unwrap() as i32, libc::SIGINT);
         }
     }
 }
@@ -74,24 +74,25 @@ impl IoObjectLite {
         let output = output.unwrap_or(Path::new("/dev/null"));
 
         let mut child = process::Command::new("bash")
+            .arg("-m")
             .arg("-e")
             .arg("-o")
             .arg("pipefail")
             .arg("-c")
-            .arg(format!(r"trap 'kill -TERM $!' SIGINT ; tee >(tstables --fill-eit --japan --log-json-line --pid 0x12 --tid 0x4E --section-number 0-1 --flush --no-pager) >(tsreadex -x 18/38/39 -n -1 -a 13 -b 5 -c 1 -u 1 -d 13 - >> {:?}) >(ffplay - &> /dev/null)", output))
+            .arg(format!("exec tee >(tstables --fill-eit --japan --log-json-line --pid 0x12 --tid 0x4E --section-number 0-1 --flush --no-pager) >(tsreadex -x 18/38/39 -n -1 -a 13 -b 5 -c 1 -u 1 -d 13 - >> {:?}) >(ffplay - &> /dev/null)", output))
             .stdin(Stdio::piped())
             .stdout(Stdio::null()) //TODO: Processed bytes
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()?;
 
-        info!("PID: {}", child.id());
+        info!("PID: {}", child.id().unwrap());
 
-        let stdin = tokio::process::ChildStdin::from_std(child.stdin.take().unwrap())?;
+        let stdin = child.stdin.take().unwrap();
         let stderr = child.stderr.take().unwrap();
 
         // tstables reader
         tokio::spawn(async move {
-            let stderr = tokio::process::ChildStderr::from_std(stderr).unwrap();
             let mut reader = FramedRead::new(stderr, LinesCodec::new());
 
             let info = info;
