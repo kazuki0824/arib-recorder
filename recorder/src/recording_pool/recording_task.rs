@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::io;
-use std::io::Write;
 use std::path::PathBuf;
 use std::pin::{pin, Pin};
 use std::task::{ready, Context, Poll};
@@ -16,18 +15,19 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
 
-use crate::recording_pool::recording_task::eit_subprocess::{EitDetected, TsDuckInner};
-use crate::recording_pool::recording_task::io_object::IoObject;
+use crate::recording_pool::recording_task::io_object_lite::IoObjectLite;
 use crate::recording_pool::recording_task::states::{RecordingState, WaitForPremiere, A};
 use crate::recording_pool::REC_POOL;
 use crate::RecordingTaskDescription;
 
-mod eit_subprocess;
-mod io_object;
+use self::io_object_lite::EitDetected;
+
+mod io_object_lite;
 mod states;
 
 pub enum RecExitType {
     Aborted(u64),
+    Bailout,
     Continue(i64, i64, i64, u64),
     Success(u64),
     EndOfStream(u64),
@@ -36,11 +36,10 @@ pub enum RecExitType {
 pin_project! {
     pub(crate) struct RecTask {
         #[pin]
-        rec: Option<IoObject>,
+        rec: Option<IoObjectLite>,
         src: Box<dyn AsyncBufRead + Unpin + Send>,
         amt: u64,
         start: std::time::Instant,
-        eit: TsDuckInner,
         next_state: RecordingState,
         pub(crate) state: RecordingState,
         pub(crate) id: i64,
@@ -60,7 +59,7 @@ impl RecTask {
         };
         info!("Create a new recording task: {:?}", info);
 
-        let (src, rec, file_location, eit) = {
+        let (src, rec, file_location) = {
             // Output location
             let mut file_location = info.save_dir_location;
             let filename = format!(
@@ -82,7 +81,7 @@ impl RecTask {
             file_location.push(filename);
 
             // Create a new task
-            let rec = Some(IoObject::new(None).await?);
+            let rec = Some(IoObjectLite::new(None, info.program.clone())?);
 
             // Get Ts Stream
             let mut c = Configuration::new();
@@ -111,10 +110,7 @@ impl RecTask {
                 }
             };
 
-            //Eit
-            let eit = TsDuckInner::new(info.program)?;
-
-            (src, rec, file_location, eit)
+            (src, rec, file_location)
         };
 
         info!("[Id={}]Connection successful.", id);
@@ -124,7 +120,6 @@ impl RecTask {
             src,
             amt: 0,
             start: std::time::Instant::now(),
-            eit,
             next_state: RecordingState::A(A {
                 since: Local::now(),
             }),
@@ -154,7 +149,8 @@ impl Future for RecTask {
                 // Determine file name
                 let new_path = match me.next_state {
                     RecordingState::Error => {
-                        todo!()
+                        info!("[id={}] Reached Error.", me.id);
+                        return Poll::Ready(Ok(RecExitType::Bailout))
                     }
                     RecordingState::Success(_) => {
                         // If next id is found, continue.
@@ -200,48 +196,36 @@ impl Future for RecTask {
                 *me.state = *me.next_state;
 
                 // Kill the current IoObject and create a new one
-                std::thread::scope(|s| {
-                    let w = cx.waker().clone();
+                // Create new. Only when error occurred, it can be `None`.
+                let new_writer = match IoObjectLite::new(new_path, item.program) {
+                    Ok(w) => Some(w),
+                    Err(e) => {
+                        error!("{:#?}", e);
+                        None
+                    }
+                };
 
-                    s.spawn(|| {
-                        // Create the runtime
-                        let rt = tokio::runtime::Runtime::new().unwrap();
-                        // Execute the future, blocking the current thread until completion
-                        let future = async {
-                            // Create new. Only when error occurred, it can be `None`.
-                            let new_writer = match IoObject::new(new_path).await {
-                                Ok(w) => Some(w),
-                                Err(e) => {
-                                    error!("{:#?}", e);
-                                    None
-                                }
-                            };
+                // Replacement
+                let old_writer = match new_writer {
+                    None => me.rec.take(),
+                    Some(new_writer) => me.rec.replace(new_writer),
+                };
 
-                            // Replacement
-                            let old_writer = match new_writer {
-                                None => me.rec.take(),
-                                Some(new_writer) => me.rec.replace(new_writer),
-                            };
-
-                            // Shutdown
-                            if let Some(mut old_writer) = old_writer {
-                                old_writer.shutdown().await.unwrap()
-                            }
-                            info!(
-                                "[id={}] Save location has been changed to {:?}.",
-                                me.id, new_path
-                            );
-                            w.wake()
-                        };
-                        rt.block_on(future)
-                    });
-                });
+                // Shutdown
+                if let Some(mut old_writer) = old_writer {
+                    drop(old_writer)
+                }
+                info!(
+                    "[id={}] Save location has been changed to {:?}.",
+                    me.id, new_path
+                );
+                cx.waker().wake_by_ref();
 
                 return Poll::Pending;
             }
 
             //ピン留め
-            let rec = me.rec.as_pin_mut();
+            let mut rec = me.rec.as_pin_mut();
 
             // 読み取りの試行
             let buffer = ready!(Pin::new(&mut me.src).poll_fill_buf(cx))?;
@@ -257,76 +241,60 @@ impl Future for RecTask {
                 return Poll::Ready(Ok(RecExitType::EndOfStream(*me.amt)));
             }
 
-            // tstablesへ書き込み
-            me.eit
-                .stdin
-                .write_all(buffer)
-                .expect("Writing to subprocess failed.");
-            me.eit
-                .stdin
-                .flush()
-                .expect("Writing to subprocess failed.");
-
             // 書き込みの試行
-            if let Some(rec) = rec {
-                let i = ready!(rec.poll_write(cx, buffer))?;
-                // log::debug!(
-                //     "[id={}] {} bytes has been written to {}",
-                //     me.id,
-                //     i,
-                //     me.file_location.display()
-                // );
+            if let Some(mut rec) = rec {
+                let i = ready!(rec.as_mut().poll_write(cx, buffer))?;
                 if i == 0 {
                     return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
                 }
                 *me.amt += i as u64;
                 pin!(&mut me.src).consume(i);
+
+
+                // Evaluate states and control IoObject
+                let operator = |recv: EitDetected, state: RecordingState| {
+                    match recv {
+                        EitDetected::P(ref inner) => {
+                            state.on_found_in_present(inner.clone())
+                        }
+                        EitDetected::F(ref inner) => {
+                            state.on_found_in_following(inner.clone())
+                        }
+                        EitDetected::NotFound { since } => {
+                            if Local::now() - since > Duration::seconds(30) {
+                                //停波中
+                                warn!(
+                                    "No EIT received for 30 secs. Check the child process and signal"
+                                );
+                            }
+                            state.on_wait_for_premiere(WaitForPremiere {
+                                start_at: item.program.start_at.into(),
+                            })
+                        }
+                    }
+                };
+
+                cx.waker().wake_by_ref();
+
+                // Check channel
+                // First, exit immediately if pending
+                if let Some(recv) = ready!(rec.as_mut().poll_recv(cx)) {
+                    let mut after = operator(recv, *me.state);
+                    while let Poll::Ready(recv) = rec.rx.poll_recv(cx) {
+                        after = operator(recv.unwrap(), after);
+                    }
+                    *me.next_state = after;
+
+                    info!("[id={}] State will be updated in the next loop", me.id);
+                    info!("[id={}] Next is {:?}", me.id, after);
+                }
+
             } else {
                 let i = buffer.len();
                 pin!(&mut me.src).consume(i);
             }
 
             let end = me.start.elapsed();
-            // println!("Time elapsed: {:.3} s. Speed: {:8.4}kb/s", end.as_secs_f64(), *me.amt as f64 / end.as_secs_f64() / 1000.0);
-
-            // Evaluate states and control IoObject
-            let operator = |recv: EitDetected, state: RecordingState| {
-                match recv {
-                    EitDetected::P(ref inner) => {
-                        state.on_found_in_present(inner.clone())
-                    }
-                    EitDetected::F(ref inner) => {
-                        state.on_found_in_following(inner.clone())
-                    }
-                    EitDetected::NotFound { since } => {
-                        if Local::now() - since > Duration::seconds(30) {
-                            //停波中
-                            warn!(
-                                "No EIT received for 30 secs. Check the child process and signal"
-                            );
-                        }
-                        state.on_wait_for_premiere(WaitForPremiere {
-                            start_at: item.program.start_at.into(),
-                        })
-                    }
-                }
-            };
-
-            cx.waker().wake_by_ref();
-
-            // Check channel
-            // First, exit immediately if pending
-            if let Some(recv) = ready!(me.eit.rx.poll_recv(cx)) {
-                let mut after = operator(recv, *me.state);
-                while let Poll::Ready(recv) = me.eit.rx.poll_recv(cx) {
-                    after = operator(recv.unwrap(), after);
-                }
-                *me.next_state = after;
-
-                info!("[id={}] State will be updated in the next loop", me.id);
-                info!("[id={}] Next is {:?}", me.id, after);
-            }
-
             Poll::Pending
         } else {
             info!("[id={}] Aborted.", me.id);

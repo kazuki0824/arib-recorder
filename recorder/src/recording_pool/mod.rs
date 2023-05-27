@@ -13,8 +13,8 @@ use crate::{RecordControlMessage, RecordingTaskDescription};
 mod recording_task;
 
 pub(crate) static mut THREAD_POOL: Lazy<JoinSet<std::io::Result<RecExitType>>> =
-    Lazy::new(|| JoinSet::new());
-pub(crate) static REC_POOL: Lazy<Map<i64, RecordingTaskDescription>> = Lazy::new(|| Map::new());
+    Lazy::new(JoinSet::new);
+pub(crate) static REC_POOL: Lazy<Map<i64, RecordingTaskDescription>> = Lazy::new(Map::new);
 
 pub(crate) async fn recording_pool_startup(
     cx: Arc<Context>,

@@ -62,9 +62,9 @@ impl A {
                 since: Local::now(),
             })
         } else if self.since + Duration::hours(1) < Local::now() {
-            RecordingState::Timeout(self::Timeout {})
+            RecordingState::Timeout(Timeout {})
         } else {
-            RecordingState::A(A { since: self.since })
+            RecordingState::A(self)
         }
     }
 }
