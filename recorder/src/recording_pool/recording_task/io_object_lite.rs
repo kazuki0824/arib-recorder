@@ -1,8 +1,9 @@
 use std::io::Write;
 use std::mem::ManuallyDrop;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::pin::Pin;
-use tokio::process;
+use std::process;
 use std::process::Stdio;
 use std::task::{Context, Poll};
 
@@ -31,16 +32,20 @@ pub enum EitDetected {
 pub(super) struct IoObjectLite {
     child: process::Child,
     pub(super) rx: mpsc::Receiver<EitDetected>,
-    pub(super) stdin: process::ChildStdin
+    pub(super) stdin: tokio::process::ChildStdin
 }
 
 impl Drop for IoObjectLite {
     fn drop(&mut self) {
-        info!("Killing {}...", self.child.id().unwrap());
+        info!("Killing {}...", self.child.id());
 
-        unsafe {
-            libc::kill(self.child.id().unwrap() as i32, libc::SIGINT);
-        }
+        let out = process::Command::new("kill")
+            .arg("--")
+            .arg(self.child.id().to_string())
+            .output()
+            .unwrap()
+            .stdout;
+        info!("{}", std::str::from_utf8(&out).unwrap());
     }
 }
 
@@ -74,7 +79,7 @@ impl IoObjectLite {
         let output = output.unwrap_or(Path::new("/dev/null"));
 
         let mut child = process::Command::new("bash")
-            .arg("-m")
+            // .arg("-m")
             .arg("-e")
             .arg("-o")
             .arg("pipefail")
@@ -83,16 +88,17 @@ impl IoObjectLite {
             .stdin(Stdio::piped())
             .stdout(Stdio::null()) //TODO: Processed bytes
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .process_group(0)
             .spawn()?;
 
-        info!("PID: {}", child.id().unwrap());
+        info!("PID: {}", child.id());
 
-        let stdin = child.stdin.take().unwrap();
+        let stdin = tokio::process::ChildStdin::from_std(child.stdin.take().unwrap())?;
         let stderr = child.stderr.take().unwrap();
 
         // tstables reader
         tokio::spawn(async move {
+            let stderr = tokio::process::ChildStderr::from_std(stderr).unwrap();
             let mut reader = FramedRead::new(stderr, LinesCodec::new());
 
             let info = info;
