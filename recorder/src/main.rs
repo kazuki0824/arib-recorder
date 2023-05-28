@@ -24,7 +24,7 @@ mod sched_trigger;
 pub enum RecordControlMessage {
     CreateOrUpdate(RecordingTaskDescription),
     TryCreate(RecordingTaskDescription),
-    Remove(i64),
+    Remove(i32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +34,7 @@ pub struct RecordingTaskDescription {
     pub save_dir_location: PathBuf,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     env_logger::init();
 
@@ -50,3 +50,6 @@ async fn main() {
         _ = tokio::signal::ctrl_c() => { println!("First signal: gracefully exitting...") }
     }
 }
+
+#[tokio::test]
+async fn test() {}

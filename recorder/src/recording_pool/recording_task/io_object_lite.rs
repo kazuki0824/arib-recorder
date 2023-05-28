@@ -41,11 +41,13 @@ impl Drop for IoObjectLite {
         info!("Killing {}...", self.child.id());
 
         let out = process::Command::new("kill")
-            .arg("-INT")
+            .arg("-TERM")
             .arg("--")
             .arg(self.child.id().to_string())
             .output()
             .unwrap();
+
+        info!("Exit status: {:?}", self.child.wait())
     }
 }
 
@@ -91,6 +93,7 @@ impl IoObjectLite {
             .arg("pipefail")
             .arg("-c")
             .arg(format!("tee >(tstables --fill-eit --japan --log-json-line --pid 0x12 --tid 0x4E --section-number 0-1 --flush --no-pager) >(tsreadex -x 18/38/39 -n -1 -a 13 -b 5 -c 1 -u 1 -d 13 - >> {:?})", output))
+            // .arg(format!("tee >(tstables --fill-eit --japan --log-json-line --pid 0x12 --tid 0x4E --section-number 0-1 --flush --no-pager) >(tsreadex -x 18/38/39 -n -1 -a 13 -b 5 -c 1 -u 1 -d 13 - >> {:?}) >(ffplay - &> /dev/null)", output))
             .stdin(Stdio::piped())
             .stdout(Stdio::null()) //TODO: Processed bytes
             .stderr(Stdio::piped())
@@ -116,7 +119,7 @@ impl IoObjectLite {
             while let Some(line) = reader.next().await {
                 let start = std::time::Instant::now();
                 let line = line?;
-                info!("{}", line);
+                // info!("{}", line);
 
                 let info = info.clone();
                 let cloned_tx = tx.clone();
@@ -215,7 +218,6 @@ impl IoObjectLite {
                     let mut iterator = eids.iter().zip(starts.iter());
                     while let Some((Value::Number(eid), Value::String(start))) = iterator.next() {
                         if info.event_id as i64 == eid.as_i64().unwrap() {
-                            info!("hit");
                             let parsed_start =
                                 NaiveDateTime::parse_from_str(start, "%Y-%m-%d %H:%M:%S")
                                     .ok()
@@ -273,7 +275,7 @@ impl IoObjectLite {
                 _ => Ok(None),
             }
         } else {
-            unreachable!("")
+            unreachable!("JSON schema mismatch in TsDuck")
         }
     }
 }

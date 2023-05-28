@@ -50,10 +50,10 @@ pin_project! {
 impl RecTask {
     pub(crate) async fn new(m_url: String, info: RecordingTaskDescription) -> io::Result<Self> {
         let id = {
-            if REC_POOL.iter().any(|v| *v.key() == info.program.id) {
+            if REC_POOL.iter().any(|v| *v.key() == info.program.event_id) {
                 panic!("Already found")
             } else {
-                REC_POOL.insert(info.program.id, info.clone());
+                REC_POOL.insert(info.program.event_id, info.clone());
                 info.program.id
             }
         };
@@ -137,8 +137,9 @@ impl Future for RecTask {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut me = self.project();
+        let eid = (*me.id % 100000) as i32;
 
-        if let Some(item) = REC_POOL.get(me.id).map(|c| c.val().clone()) {
+        if let Some(item) = REC_POOL.get(&eid).map(|c| c.val().clone()) {
             // State transition
             if me.state != me.next_state {
                 info!(
@@ -156,7 +157,7 @@ impl Future for RecTask {
                         // If next id is found, continue.
                         info!("[id={}] Reached Success.", me.id);
                         let relay = REC_POOL
-                            .get(me.id)
+                            .get(&eid)
                             .and_then(|v| v.val().program.related_items.clone())
                             .and_then(|v| {
                                 v.into_iter().find_map(|item| {
@@ -170,7 +171,7 @@ impl Future for RecTask {
                         // 正常離脱（リレー/終了）
                         return if let Some(next) = relay {
                             Poll::Ready(Ok(RecExitType::Continue(
-                                next.network_id.unwrap(),
+                                next.network_id.unwrap_or(*me.id / 10000000000),
                                 next.service_id.unwrap(),
                                 next.event_id.unwrap(),
                                 *me.amt,

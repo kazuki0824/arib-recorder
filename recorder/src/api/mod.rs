@@ -188,7 +188,7 @@ impl grpc_page::schedule_server::Schedule for MyGrpcScheduleHandler {
             .write()
             .await
             .items
-            .retain(|f| f.program.id == id);
+            .retain(|f| f.program.id != id);
         Ok(tonic::Response::new(()))
     }
 }
