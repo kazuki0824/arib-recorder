@@ -150,7 +150,7 @@ impl Future for RecTask {
                 let new_path = match me.next_state {
                     RecordingState::Error => {
                         info!("[id={}] Reached Error.", me.id);
-                        return Poll::Ready(Ok(RecExitType::Bailout))
+                        return Poll::Ready(Ok(RecExitType::Bailout));
                     }
                     RecordingState::Success(_) => {
                         // If next id is found, continue.
@@ -250,16 +250,11 @@ impl Future for RecTask {
                 *me.amt += i as u64;
                 pin!(&mut me.src).consume(i);
 
-
                 // Evaluate states and control IoObject
                 let operator = |recv: EitDetected, state: RecordingState| {
                     match recv {
-                        EitDetected::P(ref inner) => {
-                            state.on_found_in_present(inner.clone())
-                        }
-                        EitDetected::F(ref inner) => {
-                            state.on_found_in_following(inner.clone())
-                        }
+                        EitDetected::P(ref inner) => state.on_found_in_present(inner.clone()),
+                        EitDetected::F(ref inner) => state.on_found_in_following(inner.clone()),
                         EitDetected::NotFound { since } => {
                             if Local::now() - since > Duration::seconds(30) {
                                 //停波中
@@ -288,7 +283,6 @@ impl Future for RecTask {
                     info!("[id={}] State will be updated in the next loop", me.id);
                     info!("[id={}] Next is {:?}", me.id, after);
                 }
-
             } else {
                 let i = buffer.len();
                 pin!(&mut me.src).consume(i);

@@ -13,11 +13,12 @@ use jsonpath_rust::JsonPathQuery;
 use log::{error, info, warn};
 use mirakurun_client::models::Program;
 use serde_json::Value;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::io::BufWriter;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
+
 use libc;
 
 use crate::recording_pool::recording_task::states::{FoundInFollowing, FoundInPresent};
@@ -32,7 +33,7 @@ pub enum EitDetected {
 pub(super) struct IoObjectLite {
     child: process::Child,
     pub(super) rx: mpsc::Receiver<EitDetected>,
-    pub(super) stdin: tokio::process::ChildStdin
+    pub(super) stdin: tokio::process::ChildStdin,
 }
 
 impl Drop for IoObjectLite {
@@ -57,11 +58,17 @@ impl AsyncWrite for IoObjectLite {
         Pin::new(&mut self.get_mut().stdin).poll_write(cx, buf)
     }
 
-    fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), std::io::Error>> {
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.get_mut().stdin).poll_flush(cx)
     }
 
-    fn poll_shutdown(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), std::io::Error>> {
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
         Pin::new(&mut self.get_mut().stdin).poll_shutdown(cx)
     }
 }
@@ -71,7 +78,7 @@ impl IoObjectLite {
         self.get_mut().rx.poll_recv(cx)
     }
 
-    pub fn new(output: Option<&Path>, info: Program) -> std::io::Result<Self>  {
+    pub fn new(output: Option<&Path>, info: Program) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel(100);
 
         info!("File open: {:?}", output);
@@ -116,12 +123,19 @@ impl IoObjectLite {
 
                 if let Some(send_value) = Self::derive_from_last_line(&last, &line, &info) {
                     info!("[id={}] Send: {:?}", info.id, send_value);
-                    info!("[id={}] Sent! {} usecs elapsed.", info.id, start.elapsed().as_micros());
+                    info!(
+                        "[id={}] Sent! {} usecs elapsed.",
+                        info.id,
+                        start.elapsed().as_micros()
+                    );
                     last = send_value.clone();
 
                     tokio::spawn(async move {
                         /* Send result across thread */
-                        cloned_tx.send(send_value).await.map_err(|e| error!("{:?}", e))
+                        cloned_tx
+                            .send(send_value)
+                            .await
+                            .map_err(|e| error!("{:?}", e))
                     });
                 }
             }
@@ -162,12 +176,9 @@ impl IoObjectLite {
         info!("{:?}", result);
         // Assume result
         let result_merged = match (&last, &result) {
-            (
-                EitDetected::NotFound { since },
-                Some(EitDetected::NotFound { .. }),
-            ) => EitDetected::NotFound {
-                since: *since,
-            },
+            (EitDetected::NotFound { since }, Some(EitDetected::NotFound { .. })) => {
+                EitDetected::NotFound { since: *since }
+            }
             (_, None) => return None,
             _ => result.unwrap(),
         };
@@ -239,7 +250,8 @@ impl IoObjectLite {
                                     duration,
                                 })));
                             } else if duration.is_some()
-                                && Local::now() < start_at + duration.unwrap() + Duration::seconds(30)
+                                && Local::now()
+                                    < start_at + duration.unwrap() + Duration::seconds(30)
                             {
                                 // EIT[present]
                                 return Ok(Some(EitDetected::P(FoundInPresent {

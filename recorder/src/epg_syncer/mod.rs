@@ -69,7 +69,7 @@ impl EpgSyncManager {
             .with_searchable_attributes(&["name", "extended"])
             .with_filterable_attributes(&["start_at", "genres"])
             .with_sortable_attributes(&["start_at"]);
-        
+
         index_programs.set_settings(&s).await?;
         index_services.set_settings(&s).await?;
 
