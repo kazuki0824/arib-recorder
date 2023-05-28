@@ -40,12 +40,11 @@ impl Drop for IoObjectLite {
         info!("Killing {}...", self.child.id());
 
         let out = process::Command::new("kill")
+            .arg("-INT")
             .arg("--")
             .arg(self.child.id().to_string())
             .output()
-            .unwrap()
-            .stdout;
-        info!("{}", std::str::from_utf8(&out).unwrap());
+            .unwrap();
     }
 }
 
@@ -84,7 +83,7 @@ impl IoObjectLite {
             .arg("-o")
             .arg("pipefail")
             .arg("-c")
-            .arg(format!("exec tee >(tstables --fill-eit --japan --log-json-line --pid 0x12 --tid 0x4E --section-number 0-1 --flush --no-pager) >(tsreadex -x 18/38/39 -n -1 -a 13 -b 5 -c 1 -u 1 -d 13 - >> {:?}) >(ffplay - &> /dev/null)", output))
+            .arg(format!("tee >(tstables --fill-eit --japan --log-json-line --pid 0x12 --tid 0x4E --section-number 0-1 --flush --no-pager) >(tsreadex -x 18/38/39 -n -1 -a 13 -b 5 -c 1 -u 1 -d 13 - >> {:?})", output))
             .stdin(Stdio::piped())
             .stdout(Stdio::null()) //TODO: Processed bytes
             .stderr(Stdio::piped())
